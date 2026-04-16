@@ -25,6 +25,8 @@ export interface AgentSprite {
   y: number;
   mood: string | null;
   locationId: string | null;
+  /** Optional override emoji; if unset, we hash agent.id into a palette. */
+  emoji?: string;
 }
 
 export interface LocationTile {
@@ -67,6 +69,10 @@ interface Props {
   /** Events arriving live — MapCanvas translates them into sprite updates. */
   events: MapCanvasEvent[];
   atmosphereTag?: string;
+  /** Current world tick. Used for day/night tint when dayNightCycleTicks is set. */
+  tick?: number;
+  /** Full day+night cycle length in ticks. null / 0 = no cycle. */
+  dayNightCycleTicks?: number | null;
 }
 
 // Bubble TTL in ms
@@ -76,7 +82,16 @@ const BUBBLE_TTL = 6000;
 // Component
 // ============================================================
 
-export function MapCanvas({ width, height, agents, locations, events, atmosphereTag }: Props) {
+export function MapCanvas({
+  width,
+  height,
+  agents,
+  locations,
+  events,
+  atmosphereTag,
+  tick = 0,
+  dayNightCycleTicks,
+}: Props) {
   const [bubbles, setBubbles] = useState<SpeechBubble[]>([]);
   const [flash, setFlash] = useState<{ description: string; at: number } | null>(null);
 
@@ -147,6 +162,10 @@ export function MapCanvas({ width, height, agents, locations, events, atmosphere
   }, [flash]);
 
   const atmosphere = useMemo(() => atmosphereColor(atmosphereTag), [atmosphereTag]);
+  const cyclePhase = useMemo(
+    () => computeCyclePhase(tick, dayNightCycleTicks),
+    [tick, dayNightCycleTicks],
+  );
 
   return (
     <Stage width={width} height={height} style={{ background: atmosphere.bg }}>
@@ -154,15 +173,29 @@ export function MapCanvas({ width, height, agents, locations, events, atmosphere
         {/* Atmospheric vignette */}
         <Rect x={0} y={0} width={width} height={height} fill={atmosphere.overlay} opacity={0.3} />
 
+        {/* Day/night tint — blue overlay at night, gold at dusk */}
+        {cyclePhase && (
+          <Rect
+            x={0}
+            y={0}
+            width={width}
+            height={height}
+            fill={cyclePhase.tint}
+            opacity={cyclePhase.opacity}
+          />
+        )}
+
         {/* Location tiles */}
         {locations.map((loc) => (
           <LocationTileVisual key={loc.id} loc={loc} stroke={atmosphere.tile} />
         ))}
 
-        {/* Agents — circle + name label */}
+        {/* Agents — emoji avatar + mood halo + name label */}
         {agents.map((a) => {
           const pos = positions[a.id] ?? { x: a.x, y: a.y };
           const moodColor = moodToColor(a.mood);
+          const moodAnim = moodToAnimation(a.mood);
+          const emoji = a.emoji ?? pickEmojiFor(a.id);
           return (
             <AgentSpriteVisual
               key={a.id}
@@ -170,7 +203,9 @@ export function MapCanvas({ width, height, agents, locations, events, atmosphere
               x={pos.x}
               y={pos.y}
               name={a.name}
+              emoji={emoji}
               moodColor={moodColor}
+              moodAnim={moodAnim}
               textColor={atmosphere.text}
             />
           );
@@ -271,41 +306,94 @@ function AgentSpriteVisual(props: {
   x: number;
   y: number;
   name: string;
+  emoji: string;
   moodColor: string;
+  moodAnim: MoodAnimation;
   textColor: string;
 }) {
-  const circleRef = useRef<Konva.Circle | null>(null);
+  const haloRef = useRef<Konva.Circle | null>(null);
+  const emojiRef = useRef<Konva.Text | null>(null);
   const prevPos = useRef({ x: props.x, y: props.y });
 
+  // Tween to new position on any change
   useEffect(() => {
-    if (!circleRef.current) return;
     if (prevPos.current.x === props.x && prevPos.current.y === props.y) return;
-    const tween = new Konva.Tween({
-      node: circleRef.current,
-      duration: 0.6,
-      x: props.x,
-      y: props.y,
-      easing: Konva.Easings.EaseInOut,
+    const nodes = [haloRef.current, emojiRef.current].filter(Boolean) as Konva.Node[];
+    const tweens = nodes.map((n) => {
+      // emoji has its own offset, so compute deltas per-node
+      const t = new Konva.Tween({
+        node: n,
+        duration: 0.5,
+        x: props.x + (n === emojiRef.current ? -10 : 0),
+        y: props.y + (n === emojiRef.current ? -10 : 0),
+        easing: Konva.Easings.EaseInOut,
+      });
+      t.play();
+      return t;
     });
-    tween.play();
     prevPos.current = { x: props.x, y: props.y };
-    return () => tween.destroy();
+    return () => tweens.forEach((t) => t.destroy());
   }, [props.x, props.y]);
+
+  // Mood-driven ambient animation on the halo
+  useEffect(() => {
+    if (!haloRef.current) return;
+    const node = haloRef.current;
+    const anim = props.moodAnim;
+    if (anim.kind === 'none') return;
+
+    const konvaAnim = new Konva.Animation((frame) => {
+      if (!frame) return;
+      const t = frame.time / 1000;
+      switch (anim.kind) {
+        case 'pulse':
+          node.scaleX(1 + 0.15 * Math.sin(t * anim.speed));
+          node.scaleY(1 + 0.15 * Math.sin(t * anim.speed));
+          break;
+        case 'shake':
+          node.x(props.x + Math.sin(t * 40) * 1.5);
+          break;
+        case 'shrink':
+          node.opacity(0.35);
+          node.scaleX(0.85);
+          node.scaleY(0.85);
+          break;
+      }
+    }, node.getLayer());
+    konvaAnim.start();
+    return () => {
+      konvaAnim.stop();
+      node.x(props.x);
+      node.opacity(1);
+      node.scaleX(1);
+      node.scaleY(1);
+    };
+  }, [props.moodAnim, props.x]);
 
   return (
     <>
+      {/* Halo — colored mood backdrop that animates */}
       <Circle
-        ref={circleRef as never}
+        ref={haloRef as never}
         x={props.x}
         y={props.y}
-        radius={10}
+        radius={14}
         fill={props.moodColor}
-        stroke="#f3eadb"
-        strokeWidth={1.5}
+        opacity={0.55}
       />
+      {/* Emoji avatar — the little person */}
+      <Text
+        ref={emojiRef as never}
+        x={props.x - 10}
+        y={props.y - 10}
+        text={props.emoji}
+        fontSize={20}
+        fontFamily="'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif"
+      />
+      {/* Name label below */}
       <Text
         x={props.x - 40}
-        y={props.y + 14}
+        y={props.y + 16}
         width={80}
         align="center"
         text={props.name}
@@ -462,6 +550,84 @@ function atmosphereColor(tag?: string): AtmosphereTheme {
         flash: '#d6a24f',
       };
   }
+}
+
+// ============================================================
+// Mood + emoji + day/night helpers
+// ============================================================
+
+type MoodAnimation =
+  | { kind: 'none' }
+  | { kind: 'pulse'; speed: number }
+  | { kind: 'shake' }
+  | { kind: 'shrink' };
+
+function moodToAnimation(mood: string | null): MoodAnimation {
+  if (!mood) return { kind: 'none' };
+  const m = mood.toLowerCase();
+  if (/(angry|enraged|furious|hostile)/.test(m)) return { kind: 'shake' };
+  if (/(happy|joy|content|glad|hopeful|relieved)/.test(m)) return { kind: 'pulse', speed: 3 };
+  if (/(scared|afraid|anxious|worried|nervous)/.test(m)) return { kind: 'shrink' };
+  if (/(determined|focused|resolute)/.test(m)) return { kind: 'pulse', speed: 5 };
+  return { kind: 'none' };
+}
+
+/** Deterministic emoji pick — same agent id always picks the same emoji. */
+const EMOJI_PALETTE = [
+  '👤',
+  '🧑',
+  '👩',
+  '👨',
+  '🧔',
+  '👴',
+  '👵',
+  '🧙',
+  '🧛',
+  '🧜',
+  '🧝',
+  '🧞',
+  '🤠',
+  '🥷',
+  '👷',
+  '👮',
+  '🕵️',
+  '🧑‍⚕️',
+  '🧑‍🌾',
+  '🧑‍🍳',
+  '🧑‍🎨',
+  '🧑‍🚀',
+  '🐱',
+  '🐶',
+  '🦊',
+  '🐺',
+  '🦉',
+  '🐉',
+];
+
+function pickEmojiFor(id: string): string {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) {
+    h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  }
+  return EMOJI_PALETTE[h % EMOJI_PALETTE.length]!;
+}
+
+/** Returns a tint overlay based on time of day, or null if no cycle configured. */
+function computeCyclePhase(
+  tick: number,
+  cycleTicks?: number | null,
+): { tint: string; opacity: number } | null {
+  if (!cycleTicks || cycleTicks <= 0) return null;
+  const phase = (tick % cycleTicks) / cycleTicks; // 0..1
+  // 0.0 — dawn (warm light)
+  // 0.25 — midday (no tint)
+  // 0.5 — dusk (orange)
+  // 0.75 — midnight (deep blue)
+  if (phase < 0.1) return { tint: '#f5cf6b', opacity: 0.12 }; // dawn
+  if (phase < 0.4) return null; // midday: no overlay
+  if (phase < 0.55) return { tint: '#d67c3c', opacity: 0.18 }; // dusk
+  if (phase < 0.85) return { tint: '#0a1f3a', opacity: 0.35 }; // night
+  return { tint: '#3a1c3a', opacity: 0.22 }; // pre-dawn
 }
 
 function moodToColor(mood: string | null): string {

@@ -40,6 +40,8 @@ export default function LiveView() {
   const [agents, setAgents] = useState<AgentSprite[]>([]);
   const [locations, setLocations] = useState<LocationTile[]>([]);
   const [mapEvents, setMapEvents] = useState<MapCanvasEvent[]>([]);
+  const [atmosphereTag, setAtmosphereTag] = useState<string | undefined>(undefined);
+  const [dayNightCycleTicks, setDayNightCycleTicks] = useState<number | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
   // Initial world state fetch (locations + agent roster)
@@ -51,6 +53,10 @@ export default function LiveView() {
         if (!data) return;
         setLocations(layoutLocations(data.locations ?? []));
         setAgents(placeAgents(data.agents ?? [], data.locations ?? []));
+        if (data.world?.atmosphereTag) setAtmosphereTag(data.world.atmosphereTag);
+        if (data.world?.dayNightCycleTicks != null) {
+          setDayNightCycleTicks(data.world.dayNightCycleTicks);
+        }
       })
       .catch(() => {
         /* ok — use demo placeholder */
@@ -110,6 +116,9 @@ export default function LiveView() {
               agents={agents}
               locations={locations}
               events={mapEvents}
+              atmosphereTag={atmosphereTag}
+              tick={latestTick}
+              dayNightCycleTicks={dayNightCycleTicks}
             />
           )}
         </div>

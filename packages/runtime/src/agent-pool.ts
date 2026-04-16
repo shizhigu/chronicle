@@ -16,22 +16,31 @@ import type { AgentRuntimeAdapter, EventBus, RuleEnforcer, WorldStore } from '@c
 import { type AnyAgentTool, type ExecutionContext, compileWorldTools } from './tools/compiler.js';
 
 // Lazy-load pi-agent so the runtime package is loadable without it (useful for tests).
+// Pi-agent's external API uses `any` shapes — we don't re-type them here.
 type PiAgent = any;
-async function loadPi(): Promise<{
+
+export interface PiModule {
   Agent: new (opts: any) => PiAgent;
   getModel: (provider: string, id: string) => any;
-}> {
+}
+
+async function loadPi(): Promise<PiModule> {
   const [core, ai] = await Promise.all([
     import('@mariozechner/pi-agent-core'),
     import('@mariozechner/pi-ai'),
   ]);
-  return { Agent: (core as any).Agent, getModel: (ai as any).getModel };
+  return {
+    Agent: (core as { Agent: PiModule['Agent'] }).Agent,
+    getModel: (ai as { getModel: PiModule['getModel'] }).getModel,
+  };
 }
 
 export interface AgentPoolOpts {
   store: WorldStore;
   ruleEnforcer: RuleEnforcer;
   events: EventBus;
+  /** Inject a stub pi-module in tests; defaults to the real loader. */
+  piLoader?: () => Promise<PiModule>;
 }
 
 export class AgentPool implements AgentRuntimeAdapter {
@@ -45,7 +54,7 @@ export class AgentPool implements AgentRuntimeAdapter {
 
   async hydrate(world: World, agents: CharacterState[]): Promise<void> {
     this.world = world;
-    this.piModule = await loadPi();
+    this.piModule = await (this.opts.piLoader ?? loadPi)();
     this.actionSchemas = await this.opts.store.getActiveActionSchemas(world.id);
 
     for (const character of agents) {
