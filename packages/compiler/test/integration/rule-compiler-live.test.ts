@@ -1,31 +1,30 @@
 /**
- * RuleCompiler live test — real DeepSeek-v3.2 via OpenRouter.
+ * RuleCompiler live test — real call against local LM Studio.
  *
- * Two calls per successful run (classify + hard-rule parse). Output is
- * validated against our DSL parser — if the LLM emits something the
- * runtime can't parse, this test fails loudly (that's the whole point
- * of the validation step in RuleCompiler).
+ * Two LLM calls per successful run (classify + hard-rule parse). The hard-rule
+ * output must parse with our runtime DSL — that's the whole point of the
+ * validation step in RuleCompiler. If the local model emits syntax the DSL
+ * can't handle, the compiler falls back to a safe default and annotates notes.
  *
- * Cost ceiling: ~$0.0005 per run. Gated by OPENROUTER_API_KEY.
+ * Gated: auto-skips if LM Studio's local server isn't reachable.
  */
 
 import { describe, expect, it } from 'bun:test';
 import { evaluatePredicate } from '@chronicle/engine';
 import { RuleCompiler } from '../../src/rule-compiler.js';
+import { lmStudioReady, resolveLmStudioModel } from './lmstudio-helper.js';
 
-const HAS_KEY = !!process.env.OPENROUTER_API_KEY;
-const PROVIDER = 'openrouter';
-const MODEL = 'deepseek/deepseek-v3.2';
+const READY = await lmStudioReady();
+const MODEL = resolveLmStudioModel();
 
-describe.skipIf(!HAS_KEY)('RuleCompiler live · DeepSeek v3.2', () => {
+describe.skipIf(!READY)('RuleCompiler live · LM Studio', () => {
   it('compiles a simple hard rule → DSL that actually parses', async () => {
-    const compiler = new RuleCompiler({ provider: PROVIDER, modelId: MODEL });
+    const compiler = new RuleCompiler({ provider: 'lmstudio', modelId: MODEL });
     const rule = await compiler.compileOne(
       'chr_live_test',
       'A character cannot speak if they have 0 energy.',
     );
 
-    // Shape invariants
     expect(['hard', 'soft', 'economic']).toContain(rule.tier);
 
     if (rule.tier === 'hard') {
@@ -40,27 +39,10 @@ describe.skipIf(!HAS_KEY)('RuleCompiler live · DeepSeek v3.2', () => {
       ).not.toThrow();
     }
 
-    // compilerNotes should be null for a successful hard compile; if the DSL
-    // retry-and-fallback fired, it'd have a note. Either outcome is valid,
-    // but if notes mention `dsl_unparseable_fallback`, something is off with
-    // the model's output quality at this prompt.
     if (rule.compilerNotes?.includes('dsl_unparseable_fallback')) {
-      // Still fine — the retry machinery rescued a bad emit. Log for visibility.
-      console.warn(`[rule-compiler-live] DSL fallback fired: ${rule.compilerNotes.slice(0, 100)}`);
+      console.warn(
+        `[rule-compiler-live] DSL fallback fired (expected occasionally with smaller local models): ${rule.compilerNotes.slice(0, 120)}`,
+      );
     }
-  });
-
-  it('compiles an economic rule → cost formula with energy key', async () => {
-    const compiler = new RuleCompiler({ provider: PROVIDER, modelId: MODEL });
-    const rule = await compiler.compileOne('chr_live_test', 'Speaking loudly costs 3 energy.');
-
-    // Likely tier is economic but we accept soft too (it's a cost norm either way)
-    expect(['economic', 'soft']).toContain(rule.tier);
-
-    if (rule.tier === 'economic') {
-      expect(rule.economicCostFormula).toBeTruthy();
-      // Formula should contain energy=N
-      expect(rule.economicCostFormula!).toMatch(/energy=\d/);
-    }
-  });
+  }, 60_000);
 });

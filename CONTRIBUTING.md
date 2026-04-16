@@ -26,11 +26,18 @@ bun test
 # Watch mode for dev
 bun test --watch
 
-# Optional: enable live LLM integration tests (costs a fraction of a cent).
-# Uses OpenRouter's deepseek/deepseek-v3.2 with hard token caps + temp=0.
-# Tests auto-skip when the env var is unset, so the default dev flow is free.
-export OPENROUTER_API_KEY=sk-or-...
+# Optional: enable live LLM integration tests against a LOCAL LM Studio server.
+# Zero cost, zero network dependency. Tests auto-skip if the server isn't up —
+# the default dev flow is free + offline.
+#
+# 1) Open LM Studio → Developer tab → "Start Server" (defaults to :1234)
+# 2) Load any instruct-tuned model (google/gemma-3-e4b works well)
+# 3) Run the integration suite:
 bun test packages/compiler/test/integration
+#
+# Override defaults if needed:
+# export LMSTUDIO_BASE_URL=http://localhost:1234/v1
+# export LMSTUDIO_MODEL=google/gemma-3-e4b
 ```
 
 ---
