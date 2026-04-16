@@ -20,7 +20,8 @@ This ADR records what's **in** and what's **out**, and when to reopen.
 |---|---|---|
 | Literals | `true`, `false`, `null`, `1.5`, `"str"` | Baseline |
 | Paths | `character.alive`, `action.args.target`, `world.atmosphere` | All rules start here |
-| Bracket indexing | `character.inventory[0]`, `world.config["scale"]` | Heterogeneous objects |
+| Bracket indexing (literal) | `character.inventory[0]`, `world.config["scale"]` | Heterogeneous objects |
+| Bracket indexing (dynamic) | `character.inventory[action.args.slot]`, `world.characters[i + 1].name` | Rules that reference a runtime-computed key |
 | `.length` pseudo-property | `action.args.content.length <= 280` | Very common rule shape |
 | Comparison | `== != > < >= <=` | Baseline |
 | Boolean | `&&`, `\|\|`, `!`, parentheses | Compound rules |

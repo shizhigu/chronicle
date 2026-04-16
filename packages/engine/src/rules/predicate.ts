@@ -30,7 +30,8 @@
  *   primary  := number | string | bool | null | path | "(" expr ")"
  *   path     := ident pathTail*
  *   pathTail := "." ident ("(" (expr ("," expr)*)? ")")?       # method or property
- *            | "[" (number | string) "]"
+ *            | "[" (number | string) "]"                        # literal index (fast path)
+ *            | "[" expr "]"                                     # dynamic index
  *
  * Method calls are whitelisted: `includes`, `startsWith`, `endsWith`,
  * `toLowerCase`, `toUpperCase`, `trim`. No arbitrary JS is reachable.
@@ -225,6 +226,7 @@ function tokenize(src: string): Token[] {
 type PathSegment =
   | { kind: 'prop'; name: string }
   | { kind: 'index'; value: string | number }
+  | { kind: 'index-expr'; expr: Node }
   | { kind: 'method'; name: string; args: Node[] };
 
 type Node =
@@ -421,18 +423,32 @@ class Parser {
           tails.push({ kind: 'prop', name: name.value });
         }
       } else if (this.match('lbracket')) {
-        const key = this.advance();
-        if (!key) throw new PredicateError('expected index', this.src);
-        if (key.kind === 'number') {
-          tails.push({ kind: 'index', value: Number(key.value) });
-        } else if (key.kind === 'string') {
-          tails.push({ kind: 'index', value: key.value });
+        // Peek: if the opening token is a plain number/string literal AND the
+        // next token is `]`, treat it as a static index (cheaper path + matches
+        // the prior behavior). Otherwise, parse a full expression for a dynamic
+        // index like `character.inventory[action.args.slot]` or
+        // `world.characters[i + 1].name`.
+        const peek1 = this.peek();
+        const peek2 = this.tokens[this.pos + 1];
+        if (
+          peek1 &&
+          (peek1.kind === 'number' || peek1.kind === 'string') &&
+          peek2?.kind === 'rbracket'
+        ) {
+          const key = this.advance()!;
+          if (key.kind === 'number') {
+            tails.push({ kind: 'index', value: Number(key.value) });
+          } else {
+            tails.push({ kind: 'index', value: key.value });
+          }
+          this.advance(); // consume ']'
         } else {
-          throw new PredicateError('index must be number or string literal', this.src, key.pos);
-        }
-        const close = this.advance();
-        if (!close || close.kind !== 'rbracket') {
-          throw new PredicateError('missing "]"', this.src);
+          const expr = this.parseExpression();
+          const close = this.advance();
+          if (!close || close.kind !== 'rbracket') {
+            throw new PredicateError('missing "]" after dynamic index expression', this.src);
+          }
+          tails.push({ kind: 'index-expr', expr });
         }
       } else {
         break;
@@ -505,6 +521,21 @@ function walkSegments(start: unknown, segments: PathSegment[], ctx: PredicateCon
         cur = cur[Number(seg.value)];
       } else if (cur && typeof cur === 'object') {
         cur = (cur as Record<string, unknown>)[String(seg.value)];
+      } else {
+        return undefined;
+      }
+    } else if (seg.kind === 'index-expr') {
+      // Dynamic index: evaluate the sub-expression against the ORIGINAL ctx
+      // (not `cur`) so references like `action.args.slot` resolve correctly
+      // even deep inside a chained path.
+      const key = evaluate(seg.expr, ctx);
+      if (key === null || key === undefined) {
+        return undefined;
+      }
+      if (Array.isArray(cur)) {
+        cur = cur[Number(key)];
+      } else if (cur && typeof cur === 'object') {
+        cur = (cur as Record<string, unknown>)[String(key)];
       } else {
         return undefined;
       }
