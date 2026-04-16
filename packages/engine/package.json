@@ -14,7 +14,7 @@
   },
   "files": ["dist", "src"],
   "scripts": {
-    "build": "bun build src/index.ts --outdir dist --target bun --format esm --sourcemap=external --external @chronicle/core --external bun:sqlite && bun x tsc -p tsconfig.build.json --emitDeclarationOnly",
+    "build": "bun build src/index.ts --outdir dist --target bun --format esm --sourcemap=external --external @chronicle/core --external bun:sqlite",
     "dev": "bun build src/index.ts --outdir dist --target bun --format esm --watch --external @chronicle/core --external bun:sqlite",
     "typecheck": "bun x tsc --noEmit",
     "test": "bun test",

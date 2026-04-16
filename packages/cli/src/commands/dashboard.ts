@@ -8,7 +8,14 @@
  * v0.2: also spawns Remix server and opens browser.
  */
 
-import { Engine, EventBus, RuleEnforcer, WebSocketBridge, WorldStore } from '@chronicle/engine';
+import {
+  Engine,
+  EventBus,
+  RuleEnforcer,
+  WebSocketBridge,
+  WorldStateServer,
+  WorldStore,
+} from '@chronicle/engine';
 import { AgentPool } from '@chronicle/runtime';
 import { loadConfig } from '../config.js';
 import { printNextSteps } from '../output.js';
@@ -41,7 +48,16 @@ export async function dashboardCommand(worldId: string, opts: Options): Promise<
   const bridge = new WebSocketBridge(engine.bus, { port: wsPort });
   bridge.start();
 
+  // HTTP state endpoint runs on a third port (default: wsPort + 1) so it
+  // doesn't collide with the dashboard's own HTTP port or the WS upgrade port.
+  const statePort = wsPort + 1;
+  const stateServer = new WorldStateServer(store, { port: statePort });
+  stateServer.start();
+
   console.log(`✓ WebSocket bridge running at ws://localhost:${wsPort}`);
+  console.log(
+    `✓ World-state API running at http://localhost:${statePort}/api/worlds/${worldId}/state`,
+  );
   console.log(`  Dashboard URL (run separately): http://localhost:${port}/c/${worldId}`);
   console.log('');
   console.log('  To start dashboard UI in dev mode:');
@@ -60,6 +76,7 @@ export async function dashboardCommand(worldId: string, opts: Options): Promise<
     process.on('SIGINT', () => {
       console.log('\nShutting down...');
       bridge.stop();
+      stateServer.stop();
       engine.shutdown().finally(() => resolve());
     });
   });

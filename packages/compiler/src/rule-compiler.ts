@@ -10,6 +10,7 @@
 
 import { ruleId } from '@chronicle/core';
 import type { Rule, RuleScope, RuleTier } from '@chronicle/core';
+import { evaluatePredicate } from '@chronicle/engine';
 import { z } from 'zod';
 import { type Llm, createLlm, parseJsonResponse } from './llm.js';
 
@@ -43,6 +44,101 @@ const EconomicRuleSchema = z.object({
   precondition: z.string().optional(),
   scope: z.record(z.any()).optional(),
 });
+
+// ============================================================
+// DSL grammar reference — given to the LLM verbatim so its output
+// is guaranteed to be evaluable by the runtime. Kept close to the
+// actual implementation in @chronicle/engine/rules/predicate.ts.
+// ============================================================
+
+const HARD_RULE_SYSTEM_PROMPT = `You are parsing a HARD RULE for a simulation engine.
+A hard rule is an engine-enforced predicate. It either blocks an action or auto-corrects it.
+
+## Output JSON shape
+
+{
+  "predicate": "human-readable description of the condition",
+  "check": "a DSL expression evaluated pre-action (see grammar below)",
+  "appliesToAction": "action name or array of names, or omit for all",
+  "onViolation": "reject" | "auto_correct",
+  "scope": { "locationIds": [...], "agentIds": [...], "timeRange": {...} } (optional)
+}
+
+## The "check" DSL
+
+The check expression must evaluate to a boolean. It is checked against the context
+object { character, action, world } just BEFORE the proposed action is applied.
+
+Supported operators, in precedence order (low → high):
+  ||          logical or
+  &&          logical and
+  !           logical not (prefix)
+  in          membership (left value in right array or substring-in-string)
+  == != >= <= > <    comparison
+  + -         arithmetic (or string concat for +)
+  * / %       arithmetic
+  -           unary minus
+
+Paths: dotted access (\`character.energy\`), bracket indexing (\`character.inventory[0]\`,
+\`character.traits["boldness"]\`). The pseudo-property \`.length\` works on strings and
+arrays.
+
+Whitelisted methods (only these are callable):
+  \`.includes(s)\`      on strings or arrays
+  \`.startsWith(s)\`    on strings
+  \`.endsWith(s)\`      on strings
+  \`.toLowerCase()\`    on strings
+  \`.toUpperCase()\`    on strings
+  \`.trim()\`           on strings
+
+Literals: numbers (\`5\`, \`1.5\`), strings (\`"abc"\`, \`'x'\`), booleans (\`true\`, \`false\`),
+\`null\`, \`undefined\`. No other identifiers reachable — cannot call arbitrary JS.
+
+## Context object shape
+
+character: { id, name, alive, energy, health, mood, locationId, role, traits, ...custom }
+action:    { name, args, agentId, proposedAt }
+world:     { currentTick, atmosphere, ...config }
+
+## Examples (copy these patterns)
+
+- "actor must be alive"              →  \`character.alive\`
+- "min energy 5 to do anything"      →  \`character.energy >= 5\`
+- "remaining energy after cost ≥ 0"  →  \`character.energy - action.cost >= 0\`
+- "message ≤ 280 chars"              →  \`action.args.content.length <= 280\`
+- "target must be an ally"           →  \`action.args.target in character.allies\`
+- "no forbidden word"                →  \`!action.args.content.includes("password")\`
+- "@-mentions only"                  →  \`action.args.content.startsWith("@")\`
+- "case-insensitive match"           →  \`character.mood.toLowerCase() == "enraged"\`
+- "admin override"                   →  \`character.role == "admin" || character.energy >= 100\`
+
+## Rules for your output
+
+1. Use ONLY the operators, paths, and methods listed above.
+2. Do NOT use function calls other than the whitelist.
+3. Do NOT reference identifiers other than \`character\`, \`action\`, \`world\`, or literals.
+4. Prefer simple expressions. If a rule is complex, split it or make it a soft rule.
+5. Output the JSON only — no prose.`;
+
+/** Returns an error message if the expression can't parse, or null if OK. */
+function tryValidateDsl(expr: string): string | null {
+  try {
+    // Pass a shallow context; we only need to know the parser accepts the syntax.
+    // Semantic errors (like missing fields) don't matter here — runtime will
+    // short-circuit those gracefully.
+    evaluatePredicate(expr, { character: {}, action: {}, world: {} });
+    return null;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    // Filter: Zod/type errors at eval time aren't parse errors; a true parse
+    // error surfaces as PredicateError. Best-effort distinguish.
+    if (/PredicateError/.test(err?.constructor?.name ?? '') || /at position/.test(msg)) {
+      return msg;
+    }
+    // Anything else is likely a runtime issue, not a parse issue — accept.
+    return null;
+  }
+}
 
 export interface RuleCompilerOpts {
   provider?: string;
@@ -88,8 +184,10 @@ export class RuleCompiler {
     }
 
     switch (tier) {
-      case 'hard':
-        return this.buildHardRule(worldId, description, await this.parseHard(description));
+      case 'hard': {
+        const { parsed, dslWarning } = await this.parseHard(description);
+        return this.buildHardRule(worldId, description, parsed, dslWarning);
+      }
       case 'soft':
         return this.buildSoftRule(worldId, description, await this.parseSoft(description));
       case 'economic':
@@ -132,29 +230,51 @@ If genuinely unclear or multi-tier, pick "ambiguous" and explain.`;
   // Per-tier parsers
   // ========================================================
 
-  private async parseHard(description: string): Promise<z.infer<typeof HardRuleSchema>> {
-    const system = `You are parsing a HARD RULE for a simulation engine.
-A hard rule is an engine-enforced predicate. It either blocks an action or auto-corrects it.
+  private async parseHard(
+    description: string,
+  ): Promise<{ parsed: z.infer<typeof HardRuleSchema>; dslWarning?: string }> {
+    const system = HARD_RULE_SYSTEM_PROMPT;
+    const userPrompt = `Rule: "${description}"\nOutput the JSON.`;
 
-Output JSON:
-{
-  "predicate": "human-readable description of the condition",
-  "check": "a short expression evaluated pre-action. Supported: 'character.alive', 'character.energy >= N', 'target.distance <= N', 'action.actionName == \\"X\\"'",
-  "appliesToAction": "action name or array of names, or omit for all",
-  "onViolation": "reject" | "auto_correct",
-  "scope": { "locationIds": [...], "agentIds": [...], "timeRange": {...} } (optional)
-}
-
-Keep the check expression simple. Prefer simple comparisons to complex logic.`;
+    // First attempt
     const raw = await this.llm.call({
       provider: this.provider,
       modelId: this.modelId,
       system,
-      user: `Rule: "${description}"\nOutput the JSON.`,
+      user: userPrompt,
       jsonMode: true,
       temperature: 0,
     });
-    return HardRuleSchema.parse(await parseJsonResponse(raw));
+    let parsed = HardRuleSchema.parse(await parseJsonResponse(raw));
+
+    // Validate the `check` expression against the DSL parser. If the LLM emits
+    // syntax the runtime can't evaluate, retry once with the parser's error
+    // so the model can correct itself. If still bad, fall back to a safe
+    // default and surface the issue so the caller sets compilerNotes.
+    const firstError = tryValidateDsl(parsed.check);
+    if (!firstError) return { parsed };
+
+    const retryRaw = await this.llm.call({
+      provider: this.provider,
+      modelId: this.modelId,
+      system,
+      user: `${userPrompt}\n\nYour previous output's "check" field failed to parse: ${firstError}\nThe DSL grammar is described above. Emit a corrected JSON.`,
+      jsonMode: true,
+      temperature: 0,
+    });
+    try {
+      parsed = HardRuleSchema.parse(await parseJsonResponse(retryRaw));
+    } catch {
+      // Keep the original parse; downstream will still fall back.
+    }
+
+    const retryError = tryValidateDsl(parsed.check);
+    if (!retryError) return { parsed };
+
+    return {
+      parsed: { ...parsed, check: 'character.alive' },
+      dslWarning: `dsl_unparseable_fallback:${retryError}`,
+    };
   }
 
   private async parseSoft(description: string): Promise<z.infer<typeof SoftRuleSchema>> {
@@ -216,20 +336,29 @@ Costs are non-negative. Don't invent keys beyond energy/tokens/health.`;
     parsed: z.infer<typeof HardRuleSchema>,
     compilerNotes?: string,
   ): Rule {
+    // Final defense: even after parseHard's retry + fallback, re-validate.
+    const dslError = tryValidateDsl(parsed.check);
+    const safeCheck = dslError ? 'character.alive' : parsed.check;
+    const warning = dslError ? `dsl_unparseable_fallback:${dslError}` : null;
+    const notes =
+      warning && compilerNotes
+        ? `${compilerNotes}; ${warning}`
+        : (warning ?? compilerNotes ?? null);
+
     return {
       id: ruleId(),
       worldId,
       description,
       tier: 'hard',
       hardPredicate: parsed.predicate,
-      hardCheck: parsed.check,
+      hardCheck: safeCheck,
       hardOnViolation: parsed.onViolation,
       active: true,
       priority: 100,
       scope: parsed.scope as RuleScope | undefined,
       createdAt: new Date().toISOString(),
       createdByTick: null,
-      compilerNotes: compilerNotes ?? null,
+      compilerNotes: notes,
     };
   }
 

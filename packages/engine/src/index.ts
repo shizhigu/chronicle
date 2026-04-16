@@ -13,4 +13,11 @@ export { DramaDetector } from './narrative/drama.js';
 export { CatalystInjector } from './narrative/catalyst.js';
 export { GodService } from './god/service.js';
 export { WebSocketBridge, type BridgeOpts } from './bridge/websocket.js';
+export { WorldStateServer, type StateServerOpts } from './bridge/state-server.js';
 export type { AgentRuntimeAdapter } from './engine.js';
+export {
+  evaluatePredicate,
+  evaluatePredicateSafe,
+  PredicateError,
+  type PredicateContext,
+} from './rules/predicate.js';

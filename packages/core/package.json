@@ -14,7 +14,7 @@
   },
   "files": ["dist", "src"],
   "scripts": {
-    "build": "bun build src/index.ts --outdir dist --target bun --format esm --sourcemap=external && bun x tsc -p tsconfig.build.json --emitDeclarationOnly",
+    "build": "bun build src/index.ts --outdir dist --target bun --format esm --sourcemap=external",
     "dev": "bun build src/index.ts --outdir dist --target bun --format esm --watch",
     "typecheck": "bun x tsc --noEmit",
     "test": "bun test",
