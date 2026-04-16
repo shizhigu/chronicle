@@ -244,6 +244,14 @@ export class AgentPool implements AgentRuntimeAdapter {
       compileWorldTools(this.world, character, this.opts.store, this.actionSchemas),
       character,
     );
+    // Allow-list for tool-name validation in beforeToolCall. pi-agent's
+    // default behavior when the LLM invents a tool name that isn't in
+    // `tools` is to synthesize a fake-success toolResult — the model
+    // then thinks it "performed `Observe the King_performed`" and its
+    // sense of world state silently diverges from reality. Rejecting
+    // unknown names in beforeToolCall surfaces the hallucination as
+    // an error the model can recover from in the next round.
+    const toolNames = new Set(tools.map((t) => t.name));
     const messages = character.sessionStateBlob
       ? safeDeserializeMessages(Buffer.from(character.sessionStateBlob))
       : [];
@@ -273,6 +281,16 @@ export class AgentPool implements AgentRuntimeAdapter {
       sessionId: `chr_${this.world.id}_${character.id}`,
 
       beforeToolCall: async ({ toolCall, args }: { toolCall: any; args: unknown }) => {
+        // First gate: unknown tool names. pi-agent otherwise synthesizes
+        // `<name>_performed` as a fake success, and the LLM's world
+        // model drifts from reality.
+        if (!toolNames.has(toolCall.name)) {
+          return {
+            block: true,
+            reason: `unknown_tool:${toolCall.name} — call one of: ${[...toolNames].slice(0, 8).join(', ')}${toolNames.size > 8 ? ', …' : ''}`,
+          };
+        }
+        // Second gate: rule enforcement on the proposed action.
         const validation = await this.opts.ruleEnforcer.validate({
           character,
           action: {
