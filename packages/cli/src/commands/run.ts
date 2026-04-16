@@ -56,7 +56,9 @@ export async function runCommand(worldId: string, opts: Options): Promise<void> 
     throw err;
   }
 
-  // Subscribe for --live output
+  // Subscribe for --live output. Rich `speech` events get their own
+  // indented line with the content so the CLI narrative is readable;
+  // tool calls still get a compact inline token per tick.
   if (opts.live) {
     engine.bus.subscribe((event) => {
       switch (event.type) {
@@ -67,12 +69,27 @@ export async function runCommand(worldId: string, opts: Options): Promise<void> 
           process.stdout.write(`drama=${event.dramaScore.toFixed(2)} live=${event.liveAgentCount}`);
           break;
         case 'action_completed':
+          // Suppress the compact `speak·` token — we'll print the
+          // content via the `speech` event in a moment. Other tool
+          // calls still land as a single-character trace.
+          if (event.tool === 'speak' && !event.isError) break;
           process.stdout.write(
             ` ${event.agentId.slice(-4)}:${event.tool}${event.isError ? '✗' : '·'}`,
           );
           break;
+        case 'speech': {
+          const truncated =
+            event.content.length > 180 ? `${event.content.slice(0, 177)}…` : event.content;
+          process.stdout.write(
+            `\n  💬 ${event.fromAgentId.slice(-4)} → ${event.toTarget}: "${truncated}"`,
+          );
+          break;
+        }
         case 'god_intervention_applied':
           process.stdout.write(`\n  [GOD] ${event.description}\n`);
+          break;
+        case 'catalyst':
+          process.stdout.write(`\n  ✨ ${event.description}\n`);
           break;
       }
     });

@@ -202,16 +202,24 @@ export class AgentPool implements AgentRuntimeAdapter {
 
     if (modelOverride && this.piModule) {
       const prevModel = instance.state.model;
+      const prevGetApiKey = instance.getApiKey;
       const resolved = resolveModelForPi(
         modelOverride.provider,
         modelOverride.modelId,
         this.piModule.getModel,
       );
       instance.state.model = resolved.model;
+      // Swap `getApiKey` too — otherwise a reflection run against a
+      // local-server model (LM Studio, Ollama) uses the agent's
+      // original apiKey, which for cloud-agent / local-reflection
+      // pairings drops back to pi-ai's default 'No API key' error.
+      // Same failure shape I fixed for the prompt path in 3ae2b66.
+      instance.getApiKey = () => resolved.apiKey;
       try {
         await instance.prompt(prompt);
       } finally {
         instance.state.model = prevModel;
+        instance.getApiKey = prevGetApiKey;
       }
     } else {
       await instance.prompt(prompt);
@@ -306,7 +314,15 @@ export class AgentPool implements AgentRuntimeAdapter {
         return undefined;
       },
 
-      afterToolCall: async ({ toolCall, isError }: { toolCall: any; isError: boolean }) => {
+      afterToolCall: async ({
+        toolCall,
+        args,
+        isError,
+      }: {
+        toolCall: any;
+        args: unknown;
+        isError: boolean;
+      }) => {
         this.opts.events.emit({
           type: 'action_completed',
           worldId: this.world.id,
@@ -314,6 +330,26 @@ export class AgentPool implements AgentRuntimeAdapter {
           tool: toolCall.name,
           isError,
         });
+        // Also surface `speak` as a rich `speech` bus event so the
+        // CLI --live output and any other single-process subscriber
+        // see the content/to/tone. The DbEventRelay does the same
+        // split for cross-process delivery; emitting here means the
+        // run-subscriber in the same process also benefits without
+        // having to round-trip through the DB.
+        if (toolCall.name === 'speak' && !isError) {
+          const a = (args ?? {}) as { to?: string; content?: string; tone?: string | null };
+          if (typeof a.content === 'string' && a.content.length > 0) {
+            this.opts.events.emit({
+              type: 'speech',
+              worldId: this.world.id,
+              tick: this.world.currentTick + 1, // in-progress tick
+              fromAgentId: character.id,
+              toTarget: a.to ?? 'all',
+              content: a.content,
+              tone: a.tone ?? null,
+            });
+          }
+        }
       },
     });
 
