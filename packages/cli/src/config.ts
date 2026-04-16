@@ -19,6 +19,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { z } from 'zod';
+import { CliError, ExitCode } from './exit-codes.js';
 import { paths } from './paths.js';
 
 const ConfigSchema = z.object({
@@ -97,10 +98,10 @@ export function resolveDefaultModel(cfg: Config): { provider: string; modelId: s
   const provider = cfg.defaultProvider || undefined;
   const modelId = cfg.defaultModel || undefined;
   if (!provider || !modelId) {
-    throw new Error(
-      'No default provider/model configured. Run `chronicle onboard` to detect available options, then:\n' +
-        '  chronicle config --set defaultProvider=<id>\n' +
-        '  chronicle config --set defaultModel=<model>',
+    throw new CliError(
+      'No default provider/model configured.',
+      ExitCode.ConfigError,
+      'Run `chronicle onboard` to see options, then `chronicle config --set defaultProvider=<id>` and `--set defaultModel=<model>`.',
     );
   }
   return { provider, modelId };
@@ -120,11 +121,10 @@ export function resolveReflectionModel(cfg: Config): { provider: string; modelId
   const provider = cfg.reflectionProvider || cfg.defaultProvider;
   const modelId = cfg.reflectionModel || cfg.defaultModel;
   if (!provider || !modelId) {
-    throw new Error(
-      'No reflection or default model configured. Run `chronicle onboard`, then:\n' +
-        '  chronicle config --set defaultProvider=<id>\n' +
-        '  chronicle config --set defaultModel=<model>\n' +
-        '(reflection falls back to the default if unset)',
+    throw new CliError(
+      'No reflection or default model configured.',
+      ExitCode.ConfigError,
+      'Run `chronicle onboard`, then `chronicle config --set defaultProvider=<id>` and `--set defaultModel=<model>` (reflection falls back to the default if unset).',
     );
   }
   return { provider, modelId };

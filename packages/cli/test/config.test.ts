@@ -127,8 +127,20 @@ describe('resolveReflectionModel (the "reflection fallback was dead code" bug)',
       providers: {},
       telemetryEnabled: true,
     } as Parameters<typeof resolveReflectionModel>[0];
-    expect(() => resolveReflectionModel(cfg)).toThrow(/chronicle onboard/);
-    expect(() => resolveReflectionModel(cfg)).toThrow(/defaultProvider/);
+    // The error is a CliError — short message, full next-step in `.action`.
+    let thrown: unknown;
+    try {
+      resolveReflectionModel(cfg);
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeDefined();
+    const err = thrown as { message: string; action?: string; code?: number };
+    expect(err.message).toMatch(/reflection or default model/i);
+    expect(err.action).toMatch(/chronicle onboard/);
+    expect(err.action).toMatch(/defaultProvider/);
+    // Contract: ConfigError exit code.
+    expect(err.code).toBe(2);
   });
 });
 

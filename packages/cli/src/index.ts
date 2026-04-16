@@ -22,6 +22,7 @@
  */
 
 import { Command } from 'commander';
+import { registerAuthCommand } from './commands/auth.js';
 import { configCommand } from './commands/config.js';
 import { createWorldCommand } from './commands/create-world.js';
 import { dashboardCommand } from './commands/dashboard.js';
@@ -35,6 +36,7 @@ import { registerOnboardCommand } from './commands/onboard.js';
 import { runCommand } from './commands/run.js';
 import { watchCommand } from './commands/watch.js';
 import { summariseError } from './errors.js';
+import { CliError, classifyExitCode } from './exit-codes.js';
 
 const program = new Command()
   .name('chronicle')
@@ -48,6 +50,7 @@ program
 
 registerOnboardCommand(program);
 registerDoctorCommand(program);
+registerAuthCommand(program);
 
 program
   .command('create-world')
@@ -103,11 +106,16 @@ program
 
 program.parseAsync(process.argv).catch((err) => {
   console.error(`\nERROR: ${summariseError(err)}`);
+  // CliError can carry an `action` hint — promote it into the user
+  // output so the next step is obvious without reading code.
+  if (err instanceof CliError && err.action) {
+    console.error(`  → ${err.action}`);
+  }
   if (process.env.CHRONICLE_VERBOSE === '1' && err instanceof Error && err.stack) {
     console.error(err.stack);
   }
   console.log(`\nNEXT_STEPS
 - show_user "Something went wrong. Try 'chronicle doctor' to diagnose, or rerun with CHRONICLE_VERBOSE=1 for the stack."
 END_NEXT_STEPS`);
-  process.exit(1);
+  process.exit(classifyExitCode(err));
 });
