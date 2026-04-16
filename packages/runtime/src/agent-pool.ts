@@ -125,6 +125,10 @@ export class AgentPool implements AgentRuntimeAdapter {
 
     const prompt = buildTurnPrompt(observation, tick, character);
     const tokensBefore = character.tokensSpent;
+    // Snapshot transcript length BEFORE prompt() so we can extract
+    // only the messages produced during this turn (pi-agent may
+    // append several assistant + toolResult messages per prompt()).
+    const messagesBefore = (instance.state?.messages ?? []).length;
 
     // pi-agent's prompt() drives the full tool loop. We wrap it in
     // retryWithBackoff (ADR-0013) so transient failures — 429s,
@@ -153,10 +157,16 @@ export class AgentPool implements AgentRuntimeAdapter {
       };
     }
 
-    // Extract first tool call from the latest assistant message (our chosen action)
+    // Extract the "primary" tool call from this turn's messages.
+    // pi-agent's prompt() may iterate multiple rounds; the LAST
+    // assistant message is often an empty-arg retry after a
+    // context-window bump or a cleanup echo. Walk every assistant
+    // message produced this turn and pick the last toolCall whose
+    // `arguments` carry content — that's the decision we want to
+    // record as the agent's action for drama + event log.
     const messages = (instance.state?.messages ?? []) as any[];
-    const latestAssistant = findLast(messages, (m) => m?.role === 'assistant');
-    const action = latestAssistant ? extractToolCall(latestAssistant, character.id) : null;
+    const turnMessages = messages.slice(messagesBefore);
+    const action = extractPrimaryToolCall(turnMessages, character.id);
 
     const historyBlob = Buffer.from(JSON.stringify(messages), 'utf-8');
     const tokensSpent = estimateTokensFromMessages(messages, tokensBefore);
@@ -444,31 +454,57 @@ ${eventsText}
 Take exactly ONE action. Call a tool.`.trim();
 }
 
-function extractToolCall(assistantMessage: any, actorId: string): ProposedAction | null {
-  const content = assistantMessage?.content;
-  if (!Array.isArray(content)) return null;
-  for (const block of content) {
-    // pi-agent-core emits `{ type: 'toolCall', name, arguments }` (see
-    // AgentToolCall in its types.d.ts). Older parts of our codebase
-    // still reference the Anthropic-style `{ type: 'tool_use', name,
-    // input }` so we accept both — dropping the old path would break
-    // existing test fixtures until they're migrated.
-    if (block?.type === 'toolCall' && typeof block.name === 'string') {
-      return {
-        agentId: actorId,
-        actionName: block.name,
-        args: (block.arguments as Record<string, unknown>) ?? {},
-        proposedAt: Date.now(),
-      };
+/**
+ * Walk a turn's assistant messages in order and return the most
+ * meaningful tool call — the last one whose `arguments` object is
+ * non-empty. That corresponds to the agent's real decision for the
+ * turn, not an empty-arg retry the LLM emitted after hitting a
+ * context bump or an error result.
+ *
+ * Fallback: if no tool call has args (e.g. every call was `observe`
+ * which legitimately takes no args), return the LAST tool call we
+ * saw so we still record *something*. Returns null only if no tool
+ * call appeared anywhere in the turn — that path feeds into the
+ * engine's `agent_silent` tracer.
+ */
+function extractPrimaryToolCall(turnMessages: any[], actorId: string): ProposedAction | null {
+  let lastAny: ProposedAction | null = null;
+  let lastWithArgs: ProposedAction | null = null;
+  for (const m of turnMessages) {
+    if (m?.role !== 'assistant') continue;
+    const content = m.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      const proposed = toolCallFromBlock(block, actorId);
+      if (!proposed) continue;
+      lastAny = proposed;
+      if (Object.keys(proposed.args).length > 0) lastWithArgs = proposed;
     }
-    if (block?.type === 'tool_use' && typeof block.name === 'string') {
-      return {
-        agentId: actorId,
-        actionName: block.name,
-        args: (block.input as Record<string, unknown>) ?? {},
-        proposedAt: Date.now(),
-      };
-    }
+  }
+  return lastWithArgs ?? lastAny;
+}
+
+function toolCallFromBlock(block: any, actorId: string): ProposedAction | null {
+  // pi-agent-core emits `{ type: 'toolCall', name, arguments }` (see
+  // AgentToolCall in its types.d.ts). Older parts of our codebase
+  // still reference the Anthropic-style `{ type: 'tool_use', name,
+  // input }` so we accept both — dropping the old path would break
+  // existing test fixtures until they're migrated.
+  if (block?.type === 'toolCall' && typeof block.name === 'string') {
+    return {
+      agentId: actorId,
+      actionName: block.name,
+      args: (block.arguments as Record<string, unknown>) ?? {},
+      proposedAt: Date.now(),
+    };
+  }
+  if (block?.type === 'tool_use' && typeof block.name === 'string') {
+    return {
+      agentId: actorId,
+      actionName: block.name,
+      args: (block.input as Record<string, unknown>) ?? {},
+      proposedAt: Date.now(),
+    };
   }
   return null;
 }
