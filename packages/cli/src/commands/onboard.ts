@@ -16,7 +16,13 @@ import chalk from 'chalk';
 import type { Command } from 'commander';
 import { printNextSteps } from '../output.js';
 import { paths } from '../paths.js';
-import { type ProviderProbe, availableProviders, detectProviders } from '../providers.js';
+import {
+  BUILT_IN_PROVIDERS,
+  type ProviderProbe,
+  type ProviderSpec,
+  availableProviders,
+  detectProviders,
+} from '../providers.js';
 
 export function registerOnboardCommand(program: Command): void {
   program
@@ -121,20 +127,9 @@ export function buildNextSteps(s: FullState): string[] {
   }
 
   if (s.available.length === 0) {
-    steps.push(
-      'No LLM provider detected. Any of these work — Chronicle treats all equally:\n' +
-        '  LOCAL (runs on this machine, no API cost):\n' +
-        '    - LM Studio (https://lmstudio.ai): install, load a model, `lms server start`\n' +
-        '    - Ollama (https://ollama.com): install, `ollama pull <model>`, `ollama serve`\n' +
-        '  CLOUD (paid, pay-per-token):\n' +
-        '    - export ANTHROPIC_API_KEY=...\n' +
-        '    - export OPENAI_API_KEY=...\n' +
-        '    - export OPENROUTER_API_KEY=...     (one key, many models)\n' +
-        '    - export GEMINI_API_KEY=...         (Google AI Studio)\n' +
-        '    - export MISTRAL_API_KEY=...\n' +
-        '    - export GROQ_API_KEY=...\n' +
-        'Then rerun `chronicle onboard`.',
-    );
+    steps.push(`No LLM provider detected. Any of these work — Chronicle treats all equally:
+${renderNoneDetected()}
+Then rerun \`chronicle onboard\`.`);
   } else {
     const list = s.available
       .map((p) => {
@@ -165,6 +160,42 @@ export function buildNextSteps(s: FullState): string[] {
   );
 
   return steps;
+}
+
+/**
+ * Build the "no provider detected" suggestion block from `BUILT_IN_PROVIDERS`.
+ *
+ * Kept as a single helper so new catalog entries appear in the help text
+ * without edits here. Groups by probe type — local servers first, then
+ * api-key providers.
+ */
+function renderNoneDetected(): string {
+  const localLines: string[] = [];
+  const cloudLines: string[] = [];
+  for (const spec of BUILT_IN_PROVIDERS) {
+    if (spec.probe === 'server') {
+      localLines.push(`    - ${spec.label}${suffixLocal(spec)}`);
+    } else if (spec.authType === 'api-key') {
+      const primary = spec.apiKeyEnvVars[0];
+      const alts = spec.apiKeyEnvVars.slice(1);
+      const altSuffix = alts.length > 0 ? ` (or ${alts.join(' / ')})` : '';
+      cloudLines.push(`    - export ${primary}=...${altSuffix}   ${chalk.gray(`# ${spec.label}`)}`);
+    }
+  }
+  return (
+    '  LOCAL (runs on this machine, no API cost):\n' +
+    `${localLines.join('\n')}\n` +
+    '  CLOUD (paid, pay-per-token — pick any, or bring your own coding-plan token):\n' +
+    cloudLines.join('\n')
+  );
+}
+
+function suffixLocal(spec: ProviderSpec): string {
+  if (spec.id === 'lmstudio') return ' (https://lmstudio.ai — `lms server start`)';
+  if (spec.id === 'ollama') return ' (https://ollama.com — `ollama serve`)';
+  if (spec.id === 'vllm') return ' (https://docs.vllm.ai — OpenAI-compatible server)';
+  if (spec.id === 'llamacpp') return ' (llama.cpp server — OpenAI-compatible)';
+  return '';
 }
 
 // ============================================================
