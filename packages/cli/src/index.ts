@@ -37,6 +37,12 @@ import { runCommand } from './commands/run.js';
 import { watchCommand } from './commands/watch.js';
 import { summariseError } from './errors.js';
 import { CliError, classifyExitCode } from './exit-codes.js';
+import { hydrateEnvFromAuth } from './hydrate-env.js';
+
+// Inject stored api-key credentials into the env BEFORE commander
+// dispatches — downstream LLM calls read keys from process.env, so
+// this is the bridge between `chronicle auth set` and everything else.
+hydrateEnvFromAuth();
 
 const program = new Command()
   .name('chronicle')
