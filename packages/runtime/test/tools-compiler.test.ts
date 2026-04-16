@@ -6,16 +6,25 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { actionId, agentId, locationId, resourceId, worldId } from '@chronicle/core';
 import type { ActionSchema, Agent, Location, Resource, World } from '@chronicle/core';
-import { WorldStore } from '@chronicle/engine';
+import { MemoryFileStore, WorldStore } from '@chronicle/engine';
 import { type ExecutionContext, compileWorldTools } from '../src/tools/compiler.js';
 
 let store: WorldStore;
+let memory: MemoryFileStore;
+let memRoot: string;
 let world: World;
 let alice: Agent;
 let bob: Agent;
 let kitchen: Location;
+
+function makeCtx(character: Agent, tick = 3): ExecutionContext {
+  return { world, character, tick, store, memory };
+}
 
 function makeWorld(): World {
   return {
@@ -76,6 +85,8 @@ function makeAgent(wId: string, name: string, locId: string | null): Agent {
 
 beforeEach(async () => {
   store = await WorldStore.open(':memory:');
+  memRoot = mkdtempSync(join(tmpdir(), 'chronicle-tools-'));
+  memory = new MemoryFileStore({ root: memRoot });
   world = makeWorld();
   await store.createWorld(world);
 
@@ -99,7 +110,10 @@ beforeEach(async () => {
   await store.createAgent(alice);
   await store.createAgent(bob);
 });
-afterEach(() => store.close());
+afterEach(() => {
+  store.close();
+  rmSync(memRoot, { recursive: true, force: true });
+});
 
 describe('compileWorldTools — core tools', () => {
   it('always includes observe, think, speak', () => {
@@ -110,23 +124,74 @@ describe('compileWorldTools — core tools', () => {
     expect(names).toContain('speak');
   });
 
-  it('think records a private memory', async () => {
+  it('think is a no-op — a thought returns ok without touching durable memory', async () => {
     const tools = compileWorldTools(world, alice, store, []);
     const think = tools.find((t) => t.name === 'think')!;
-    const ctx: ExecutionContext = { world, character: alice, tick: 3, store };
-    const result = await think.execute({ thought: 'I should leave.' }, ctx);
+    const result = await think.execute({ thought: 'I should leave.' }, makeCtx(alice));
+    expect(result.ok).toBe(true);
+    // Durable memory is untouched — think is meant to be ephemeral (it
+    // lives only in the pi-agent conversation history). Durable memory
+    // is written exclusively through memory_add.
+    expect(await memory.entryCount(world.id, alice.id)).toBe(0);
+  });
+
+  it('pass tool is registered and returns ok with no side effects', async () => {
+    const tools = compileWorldTools(world, alice, store, []);
+    expect(tools.map((t) => t.name)).toContain('pass');
+    const pass = tools.find((t) => t.name === 'pass')!;
+    const result = await pass.execute({ reason: 'listening' }, makeCtx(alice));
+    expect(result.ok).toBe(true);
+    expect(result.detail).toBe('passed');
+    // No durable memory writes, no event in the tool itself — the
+    // engine stamps lastActiveTick post-turn regardless.
+    expect(await memory.entryCount(world.id, alice.id)).toBe(0);
+  });
+
+  it('memory_add writes an entry to the character memory file', async () => {
+    const tools = compileWorldTools(world, alice, store, []);
+    const add = tools.find((t) => t.name === 'memory_add')!;
+    const result = await add.execute(
+      { content: 'Bob cannot be trusted around food.' },
+      makeCtx(alice),
+    );
+    expect(result.ok).toBe(true);
+    const entries = await memory.entries(world.id, alice.id);
+    expect(entries).toEqual(['Bob cannot be trusted around food.']);
+  });
+
+  it('memory_replace edits the single matching entry', async () => {
+    await memory.add(world.id, alice.id, 'Bob stole bread.');
+    await memory.add(world.id, alice.id, 'Carol is a friend.');
+
+    const tools = compileWorldTools(world, alice, store, []);
+    const replace = tools.find((t) => t.name === 'memory_replace')!;
+    const result = await replace.execute(
+      { old_text: 'stole bread', new_content: 'Bob returned the bread, maybe trustworthy.' },
+      makeCtx(alice),
+    );
     expect(result.ok).toBe(true);
 
-    const mems = await store.getMemoriesForAgent(alice.id);
-    expect(mems.some((m) => m.content === 'I should leave.' && m.memoryType === 'thought')).toBe(
-      true,
-    );
+    const entries = await memory.entries(world.id, alice.id);
+    expect(entries).toEqual(['Bob returned the bread, maybe trustworthy.', 'Carol is a friend.']);
+  });
+
+  it('memory_remove deletes the single matching entry', async () => {
+    await memory.add(world.id, alice.id, 'Outdated belief A.');
+    await memory.add(world.id, alice.id, 'Still relevant B.');
+
+    const tools = compileWorldTools(world, alice, store, []);
+    const remove = tools.find((t) => t.name === 'memory_remove')!;
+    const result = await remove.execute({ old_text: 'Outdated' }, makeCtx(alice));
+    expect(result.ok).toBe(true);
+
+    const entries = await memory.entries(world.id, alice.id);
+    expect(entries).toEqual(['Still relevant B.']);
   });
 
   it('speak to a specific agent records a message with both heard', async () => {
     const tools = compileWorldTools(world, alice, store, []);
     const speak = tools.find((t) => t.name === 'speak')!;
-    const ctx: ExecutionContext = { world, character: alice, tick: 3, store };
+    const ctx: ExecutionContext = makeCtx(alice);
     const result = await speak.execute({ to: 'Bob', content: 'Hello.', tone: 'neutral' }, ctx);
     expect(result.ok).toBe(true);
 
@@ -141,7 +206,7 @@ describe('compileWorldTools — core tools', () => {
   it('speak "all" broadcasts to everyone at the same location', async () => {
     const tools = compileWorldTools(world, alice, store, []);
     const speak = tools.find((t) => t.name === 'speak')!;
-    const ctx: ExecutionContext = { world, character: alice, tick: 3, store };
+    const ctx: ExecutionContext = makeCtx(alice);
     await speak.execute({ to: 'all', content: 'Look!' }, ctx);
 
     const messages = await store.getMessagesForTick(world.id, 3);
@@ -153,7 +218,7 @@ describe('compileWorldTools — core tools', () => {
   it('speak "whisper:<name>" is private', async () => {
     const tools = compileWorldTools(world, alice, store, []);
     const speak = tools.find((t) => t.name === 'speak')!;
-    const ctx: ExecutionContext = { world, character: alice, tick: 3, store };
+    const ctx: ExecutionContext = makeCtx(alice);
     await speak.execute({ to: 'whisper:Bob', content: 'Secret.' }, ctx);
 
     const messages = await store.getMessagesForTick(world.id, 3);
@@ -222,7 +287,7 @@ describe('compileWorldTools — schema-driven tools', () => {
     const tools = compileWorldTools(world, alice, store, schemas);
     const dig = tools.find((t) => t.name === 'dig')!;
 
-    const ctx: ExecutionContext = { world, character: alice, tick: 3, store };
+    const ctx: ExecutionContext = makeCtx(alice);
     await dig.execute({ where: 'garden' }, ctx);
 
     const fresh = await store.getAgent(alice.id);
@@ -269,7 +334,7 @@ describe('built-in actions — gather, give, take, sleep, move', () => {
     await store.addAdjacency(kitchen.id, garden.id, 1, true);
 
     const move = await toolWith('move');
-    const ctx: ExecutionContext = { world, character: alice, tick: 3, store };
+    const ctx: ExecutionContext = makeCtx(alice);
     const result = await move.execute({ destination: 'garden' }, ctx);
     expect(result.ok).toBe(true);
 
@@ -290,7 +355,7 @@ describe('built-in actions — gather, give, take, sleep, move', () => {
     await store.createResource(apple);
 
     const gather = await toolWith('gather');
-    const ctx: ExecutionContext = { world, character: alice, tick: 3, store };
+    const ctx: ExecutionContext = makeCtx(alice);
     const result = await gather.execute({ resource: 'apple' }, ctx);
     expect(result.ok).toBe(true);
 
@@ -302,7 +367,7 @@ describe('built-in actions — gather, give, take, sleep, move', () => {
     await store.updateAgentState(alice.id, { energy: 20 });
     const sleep = await toolWith('sleep');
     const aliceFresh = await store.getAgent(alice.id);
-    const ctx: ExecutionContext = { world, character: aliceFresh, tick: 3, store };
+    const ctx: ExecutionContext = makeCtx(aliceFresh);
     await sleep.execute({}, ctx);
 
     const after = await store.getAgent(alice.id);

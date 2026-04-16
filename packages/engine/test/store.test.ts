@@ -140,62 +140,7 @@ describe('WorldStore', () => {
     expect(events[2]?.eventType).toBe('tick_end');
   });
 
-  it('persists and retrieves memories ranked by importance', async () => {
-    const w = makeWorld(worldId());
-    await store.createWorld(w);
-    const a: Agent = {
-      id: agentId(),
-      worldId: w.id,
-      name: 'A',
-      persona: '',
-      traits: {},
-      privateState: null,
-      alive: true,
-      locationId: null,
-      mood: null,
-      energy: 100,
-      health: 100,
-      tokensBudget: null,
-      tokensSpent: 0,
-      sessionId: null,
-      sessionStateBlob: null,
-      modelTier: 'haiku',
-      provider: 'anthropic',
-      modelId: 'claude-haiku-4-5',
-      thinkingLevel: 'low',
-      birthTick: 0,
-      deathTick: null,
-      parentIds: null,
-      createdAt: new Date().toISOString(),
-    };
-    await store.createAgent(a);
-
-    await store.addMemory({
-      agentId: a.id,
-      createdTick: 0,
-      memoryType: 'thought',
-      content: 'low',
-      importance: 0.1,
-      decay: 1,
-      relatedEventId: null,
-      aboutAgentId: null,
-      embedding: null,
-      lastAccessedTick: null,
-    });
-    await store.addMemory({
-      agentId: a.id,
-      createdTick: 0,
-      memoryType: 'thought',
-      content: 'high',
-      importance: 0.9,
-      decay: 1,
-      relatedEventId: null,
-      aboutAgentId: null,
-      embedding: null,
-      lastAccessedTick: null,
-    });
-
-    const mems = await store.getMemoriesForAgent(a.id, 10);
-    expect(mems[0]?.importance).toBeGreaterThan(mems[1]!.importance);
-  });
+  // Durable memory is no longer a WorldStore concern — it lives in
+  // per-character markdown files managed by MemoryFileStore. See
+  // memory-file-store.test.ts for coverage.
 });

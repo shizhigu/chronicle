@@ -55,7 +55,7 @@ Concretely:
 ### Negative
 - **Single-writer constraint.** SQLite serializes writes within a single file. For our tick loop this is fine — the engine is the only writer per world — but multi-world hosted deployments need one DB per world, not one DB shared across worlds.
 - **Concurrency ceiling.** If we ever want many concurrent writers on one world (e.g., collaborative Chronicle editor), SQLite is not the right store. We would need to evolve.
-- **Binary blobs** (embeddings, agent session state) live in the same file — can make the DB sizable. Mitigated by pragma `page_size`, periodic `VACUUM`, and optional snapshots stored externally.
+- **Binary blobs** (agent session state) live in the same file — can make the DB sizable. Mitigated by pragma `page_size`, periodic `VACUUM`, and optional snapshots stored externally. (Character memory does *not* sit in the DB — it lives in per-character markdown files managed by `MemoryFileStore`.)
 
 ### Neutral / accept
 - We use WAL mode + `synchronous=NORMAL` for writer throughput; this means a process crash can lose the last few events. Acceptable for a simulation; documented in `docs/ARCHITECTURE.md`.

@@ -28,12 +28,13 @@
  * the OAuth flow modules, not here.
  */
 
-import { findProviderSpec } from '@chronicle/core';
+import { CredentialPool, findProviderSpec } from '@chronicle/core';
+import type { ApiKeyCredential } from './auth-storage.js';
 import { type AuthStore, listStoredProviders, loadAuth } from './auth-storage.js';
 
 export interface HydrateResult {
   /** Provider ids whose api-key credential was injected into an env var. */
-  injected: Array<{ provider: string; envVar: string }>;
+  injected: Array<{ provider: string; envVar: string; poolKeyId?: string }>;
   /** Provider ids skipped (unknown id, OAuth credential, env already set, etc). */
   skipped: Array<{ provider: string; reason: string }>;
 }
@@ -79,11 +80,45 @@ export function hydrateEnvFromAuth(
       });
       continue;
     }
-    env[envVar] = cred.key;
-    result.injected.push({ provider: providerId, envVar });
+
+    // Build a pool from the primary + any additionalKeys (ADR-0014).
+    // Single-key credentials yield a pool-of-one that behaves
+    // identically to the old code path. The default strategy is
+    // round_robin; across process restarts each invocation starts a
+    // fresh pool, so a CI loop running many `chronicle` calls will
+    // naturally cycle through keys.
+    const { chosen, poolKeyId } = pickFromCredential(cred);
+    env[envVar] = chosen;
+    result.injected.push({ provider: providerId, envVar, poolKeyId });
   }
 
   return result;
+}
+
+/**
+ * Build a CredentialPool containing every key this credential exposes
+ * (primary + additionalKeys), pick one, return (value, id). The id is
+ * useful in logs / doctor output — "using key 'work'" beats "using an
+ * unlabeled key".
+ */
+function pickFromCredential(cred: ApiKeyCredential): {
+  chosen: string;
+  poolKeyId: string;
+} {
+  const pool = new CredentialPool('round_robin');
+  pool.add({ id: 'primary', value: cred.key });
+  for (let i = 0; i < (cred.additionalKeys?.length ?? 0); i++) {
+    const extra = cred.additionalKeys![i]!;
+    const id = extra.label?.trim() || `additional_${i + 1}`;
+    pool.add({ id, value: extra.key });
+  }
+  const picked = pool.pickAvailable();
+  // pool.add just succeeded so pickAvailable cannot return null here;
+  // narrow explicitly so TS is happy.
+  if (!picked) {
+    return { chosen: cred.key, poolKeyId: 'primary' };
+  }
+  return { chosen: picked.value, poolKeyId: picked.id };
 }
 
 function listStoredProvidersSafe(): string[] {

@@ -73,10 +73,13 @@ No cycles. Ever.
                         per agent     ┌──────▼──────────┐
                                       │ ObservationBuild│
                                       └──────┬──────────┘
-                        3. attach            │
-                        memories      ┌──────▼──────────┐
-                                      │ MemoryService   │
-                                      └──────┬──────────┘
+                        3. durable memory    │
+                        is already in        │
+                        system prompt        │
+                        (injected at         │
+                        session start via    │
+                        MemoryFileStore)     │
+                                             │
                         4. parallel          │
                         LLM calls    ┌───────▼─────────────┐
                                       │    AgentPool         │
@@ -114,8 +117,11 @@ No cycles. Ever.
 **Role**: lingua franca.
 
 Contains TypeScript interfaces that every other package uses:
-- `World`, `Agent`, `Location`, `Resource`, `Rule`, `ActionSchema`, `Event`, `Message`, `AgentMemory`, `Relationship`, `Agreement`, `GodIntervention`
+- `World`, `Agent`, `Location`, `Resource`, `Rule`, `ActionSchema`, `Event`, `Message`, `Relationship`, `Agreement`, `GodIntervention`
 - `Observation`, `ProposedAction`, `TurnResult`, `ValidationResult`
+
+(No `AgentMemory` — durable memory moved out of SQLite to per-character
+markdown files managed by `MemoryFileStore`. See the engine package.)
 
 Plus:
 - `generateId(prefix)`, `worldId()`, `agentId()`, etc. — nanoid-based short IDs
@@ -133,8 +139,8 @@ Key classes:
 - `RuleEnforcer` — evaluates hard/soft/economic rules against proposed actions.
 - `EventBus` — in-process pub/sub. Emits structured events for UI/logging.
 - `ObservationBuilder` — computes per-agent observations.
-- `MemoryService` — stores + retrieves memories (recency × importance × keyword overlap).
-- `ReflectionService` — triggers periodic deep reflections (depends on adapter via `ReflectionDeps`).
+- `MemoryFileStore` — per-character markdown memory file, curated by the agent via `memory_add`/`memory_replace`/`memory_remove`. Injected as a frozen snapshot into the system prompt at session start (hermes-agent pattern). No embeddings, no retrieval scoring.
+- `ReflectionService` — triggers periodic deep reflections; writes each reflection as a new entry into the character's memory file.
 - `DramaDetector` — scores recent ticks for dramatic activity.
 - `CatalystInjector` — injects prompted "something happens" events when drama low.
 - `GodService` — queues + applies user interventions.

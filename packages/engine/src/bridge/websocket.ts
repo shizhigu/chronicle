@@ -9,6 +9,7 @@
  * — no `ws` dependency.
  */
 
+import { redactValue } from '@chronicle/core';
 import type { Server, ServerWebSocket } from 'bun';
 import type { BusEvent, EventBus } from '../events/bus.js';
 
@@ -124,7 +125,12 @@ export class WebSocketBridge {
 
   private sendTo(socket: ServerWebSocket<SocketContext>, event: BusEvent): void {
     try {
-      socket.send(JSON.stringify(event));
+      // Redact at the transport boundary — event content is free-form
+      // (speech, descriptions, personas) and can harbor API keys that
+      // the user accidentally embedded. Storage keeps the original;
+      // only the wire copy is masked. See ADR-0012.
+      const safe = redactValue(event);
+      socket.send(JSON.stringify(safe));
     } catch {
       // client may have disconnected; drop silently
     }

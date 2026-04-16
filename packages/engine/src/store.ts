@@ -9,7 +9,7 @@
  */
 
 import { Database } from 'bun:sqlite';
-import { and, asc, desc, eq, gte, lte, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, isNull, lte, or, sql } from 'drizzle-orm';
 import { type BunSQLiteDatabase, drizzle } from 'drizzle-orm/bun-sqlite';
 
 import { migrate } from './db/migrate.js';
@@ -20,18 +20,54 @@ import { dirname } from 'node:path';
 import type {
   ActionSchema,
   Agent,
-  AgentMemory,
+  Authority,
+  AuthorityHolderKind,
+  AuthorityPower,
+  Effect,
   Event,
   EventType,
   GodIntervention,
+  Group,
+  GroupMembership,
+  GroupRole,
   Location,
-  MemoryType,
   Message,
+  Proposal,
+  ProposalStatus,
   Relationship,
   Resource,
   Rule,
+  Vote,
   World,
 } from '@chronicle/core';
+
+// ============================================================
+// Domain errors — thrown from store methods so callers can branch on
+// type instead of parsing SQLite error strings.
+// ============================================================
+
+export class AlreadyMemberError extends Error {
+  constructor(
+    public groupId: string,
+    public agentId: string,
+  ) {
+    super(`agent ${agentId} already an active member of ${groupId}`);
+    this.name = 'AlreadyMemberError';
+  }
+}
+
+function isUniqueConstraintError(err: unknown): boolean {
+  // bun:sqlite surfaces these with code 'SQLITE_CONSTRAINT_UNIQUE' on
+  // either the error itself or a wrapped `.cause`. Check both.
+  const code = (err as { code?: string } | null)?.code;
+  const causeCode = (err as { cause?: { code?: string } } | null)?.cause?.code;
+  return (
+    code === 'SQLITE_CONSTRAINT_UNIQUE' ||
+    code === 'SQLITE_CONSTRAINT' ||
+    causeCode === 'SQLITE_CONSTRAINT_UNIQUE' ||
+    causeCode === 'SQLITE_CONSTRAINT'
+  );
+}
 
 export class WorldStore {
   private db: Database;
@@ -149,6 +185,7 @@ export class WorldStore {
       birthTick: a.birthTick,
       deathTick: a.deathTick ?? null,
       parentIdsJson: a.parentIds ? JSON.stringify(a.parentIds) : null,
+      lastActiveTick: a.lastActiveTick ?? null,
     });
   }
 
@@ -166,6 +203,14 @@ export class WorldStore {
     return rows.map(mapAgentFromRow);
   }
 
+  // Unlike getLiveAgents, includes dead rows. Separate method (rather
+  // than an includeDead flag on the above) so the common hot path stays
+  // a single-predicate query and callers can't forget to filter.
+  async getAllAgents(worldId: string): Promise<Agent[]> {
+    const rows = await this.orm.select().from(s.agents).where(eq(s.agents.worldId, worldId));
+    return rows.map(mapAgentFromRow);
+  }
+
   async updateAgentState(
     id: string,
     updates: Partial<
@@ -179,6 +224,10 @@ export class WorldStore {
         | 'sessionStateBlob'
         | 'alive'
         | 'deathTick'
+        | 'lastActiveTick'
+        | 'persona'
+        | 'privateState'
+        | 'traits'
       >
     >,
   ): Promise<void> {
@@ -191,6 +240,13 @@ export class WorldStore {
     if (updates.sessionStateBlob !== undefined) set.sessionStateBlob = updates.sessionStateBlob;
     if (updates.alive !== undefined) set.alive = updates.alive;
     if (updates.deathTick !== undefined) set.deathTick = updates.deathTick;
+    if (updates.lastActiveTick !== undefined) set.lastActiveTick = updates.lastActiveTick;
+    if (updates.persona !== undefined) set.persona = updates.persona;
+    if (updates.privateState !== undefined) {
+      set.privateStateJson =
+        updates.privateState === null ? null : JSON.stringify(updates.privateState);
+    }
+    if (updates.traits !== undefined) set.traitsJson = JSON.stringify(updates.traits);
     if (Object.keys(set).length === 0) return;
     await this.orm.update(s.agents).set(set).where(eq(s.agents.id, id));
   }
@@ -319,6 +375,8 @@ export class WorldStore {
       economicCostFormula: r.economicCostFormula ?? null,
       active: r.active,
       priority: r.priority,
+      scopeKind: r.scopeKind ?? 'world',
+      scopeRef: r.scopeRef ?? null,
       scopeJson: r.scope ? JSON.stringify(r.scope) : null,
       createdByTick: r.createdByTick ?? null,
       compilerNotes: r.compilerNotes ?? null,
@@ -415,44 +473,15 @@ export class WorldStore {
   }
 
   // ============================================================
-  // MEMORIES
+  // MEMORIES — moved out of the DB.
+  //
+  // Durable character memory now lives in a per-character markdown
+  // file managed by @chronicle/engine's MemoryFileStore (hermes-agent
+  // pattern). This table was removed; the store never owned retrieval
+  // anyway (MemoryService did keyword scoring in-memory), and the
+  // DB-backed format made memory opaque to users and unfriendly to
+  // backup/export.
   // ============================================================
-
-  async addMemory(m: Omit<AgentMemory, 'id'>): Promise<number> {
-    const result = await this.orm
-      .insert(s.agentMemories)
-      .values({
-        agentId: m.agentId,
-        createdTick: m.createdTick,
-        memoryType: m.memoryType,
-        content: m.content,
-        importance: m.importance,
-        decay: m.decay,
-        relatedEventId: m.relatedEventId ?? null,
-        aboutAgentId: m.aboutAgentId ?? null,
-        embedding: m.embedding ?? null,
-        lastAccessedTick: m.lastAccessedTick ?? null,
-      })
-      .returning({ id: s.agentMemories.id });
-    return result[0]!.id;
-  }
-
-  async getMemoriesForAgent(agentId: string, limit = 100): Promise<AgentMemory[]> {
-    const rows = await this.orm
-      .select()
-      .from(s.agentMemories)
-      .where(eq(s.agentMemories.agentId, agentId))
-      .orderBy(desc(s.agentMemories.importance), desc(s.agentMemories.createdTick))
-      .limit(limit);
-    return rows.map(mapMemoryFromRow);
-  }
-
-  async updateMemoryAccessed(id: number, tick: number): Promise<void> {
-    await this.orm
-      .update(s.agentMemories)
-      .set({ lastAccessedTick: tick })
-      .where(eq(s.agentMemories.id, id));
-  }
 
   // ============================================================
   // MESSAGES
@@ -586,6 +615,379 @@ export class WorldStore {
   }
 
   // ============================================================
+  // GOVERNANCE — groups, memberships, roles, authorities
+  // (ADR-0009 Layer 1)
+  // ============================================================
+
+  async createGroup(g: Group): Promise<void> {
+    await this.orm.insert(s.groups).values({
+      id: g.id,
+      worldId: g.worldId,
+      name: g.name,
+      description: g.description,
+      procedureKind: g.procedureKind,
+      procedureConfigJson: JSON.stringify(g.procedureConfig ?? {}),
+      joinPredicate: g.joinPredicate ?? null,
+      successionKind: g.successionKind ?? null,
+      visibilityPolicy: g.visibilityPolicy,
+      foundedTick: g.foundedTick,
+      dissolvedTick: g.dissolvedTick ?? null,
+    });
+  }
+
+  async getGroup(id: string): Promise<Group | null> {
+    const rows = await this.orm.select().from(s.groups).where(eq(s.groups.id, id)).limit(1);
+    return rows[0] ? mapGroupFromRow(rows[0]) : null;
+  }
+
+  async getGroupsForWorld(worldId: string, includeDissolved = false): Promise<Group[]> {
+    const whereExpr = includeDissolved
+      ? eq(s.groups.worldId, worldId)
+      : and(eq(s.groups.worldId, worldId), isNull(s.groups.dissolvedTick));
+    const rows = await this.orm.select().from(s.groups).where(whereExpr);
+    return rows.map(mapGroupFromRow);
+  }
+
+  async dissolveGroup(id: string, tick: number): Promise<void> {
+    await this.orm.update(s.groups).set({ dissolvedTick: tick }).where(eq(s.groups.id, id));
+  }
+
+  /**
+   * Enroll `agentId` in `groupId` at `joinedTick`. If the agent already
+   * has an active membership, this throws `AlreadyMemberError` — the
+   * partial unique index `idx_memberships_one_active` prevents silent
+   * duplicates under concurrent joins. Callers that treat this as a
+   * no-op should check `isMember` first.
+   */
+  async addMembership(groupId: string, agentId: string, joinedTick: number): Promise<void> {
+    try {
+      await this.orm.insert(s.groupMemberships).values({
+        groupId,
+        agentId,
+        joinedTick,
+        leftTick: null,
+      });
+    } catch (err) {
+      if (isUniqueConstraintError(err)) {
+        throw new AlreadyMemberError(groupId, agentId);
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Mark the agent's current (leftTick=NULL) membership as ended at `tick`.
+   * No-op if the agent is not currently a member — callers should check
+   * first if they need strict semantics.
+   */
+  async removeMembership(groupId: string, agentId: string, tick: number): Promise<void> {
+    await this.orm
+      .update(s.groupMemberships)
+      .set({ leftTick: tick })
+      .where(
+        and(
+          eq(s.groupMemberships.groupId, groupId),
+          eq(s.groupMemberships.agentId, agentId),
+          isNull(s.groupMemberships.leftTick),
+        ),
+      );
+  }
+
+  async getActiveMembershipsForGroup(groupId: string): Promise<GroupMembership[]> {
+    const rows = await this.orm
+      .select()
+      .from(s.groupMemberships)
+      .where(and(eq(s.groupMemberships.groupId, groupId), isNull(s.groupMemberships.leftTick)));
+    return rows.map(mapMembershipFromRow);
+  }
+
+  async getActiveMembershipsForAgent(agentId: string): Promise<GroupMembership[]> {
+    const rows = await this.orm
+      .select()
+      .from(s.groupMemberships)
+      .where(and(eq(s.groupMemberships.agentId, agentId), isNull(s.groupMemberships.leftTick)));
+    return rows.map(mapMembershipFromRow);
+  }
+
+  async isMember(groupId: string, agentId: string): Promise<boolean> {
+    const rows = await this.orm
+      .select({ g: s.groupMemberships.groupId })
+      .from(s.groupMemberships)
+      .where(
+        and(
+          eq(s.groupMemberships.groupId, groupId),
+          eq(s.groupMemberships.agentId, agentId),
+          isNull(s.groupMemberships.leftTick),
+        ),
+      )
+      .limit(1);
+    return rows.length > 0;
+  }
+
+  /**
+   * Upsert a role row. Rows are keyed by (groupId, roleName) so writing
+   * the same role again overwrites holder / weight / scope. Use this for
+   * both creation and reassignment.
+   */
+  async upsertGroupRole(role: GroupRole): Promise<void> {
+    await this.orm
+      .insert(s.groupRoles)
+      .values({
+        groupId: role.groupId,
+        roleName: role.roleName,
+        holderAgentId: role.holderAgentId ?? null,
+        assignedTick: role.assignedTick ?? null,
+        votingWeight: role.votingWeight,
+        scopeRef: role.scopeRef ?? null,
+      })
+      .onConflictDoUpdate({
+        target: [s.groupRoles.groupId, s.groupRoles.roleName],
+        set: {
+          holderAgentId: role.holderAgentId ?? null,
+          assignedTick: role.assignedTick ?? null,
+          votingWeight: role.votingWeight,
+          scopeRef: role.scopeRef ?? null,
+        },
+      });
+  }
+
+  async getGroupRole(groupId: string, roleName: string): Promise<GroupRole | null> {
+    const rows = await this.orm
+      .select()
+      .from(s.groupRoles)
+      .where(and(eq(s.groupRoles.groupId, groupId), eq(s.groupRoles.roleName, roleName)))
+      .limit(1);
+    return rows[0] ? mapGroupRoleFromRow(rows[0]) : null;
+  }
+
+  async getRolesForGroup(groupId: string): Promise<GroupRole[]> {
+    const rows = await this.orm
+      .select()
+      .from(s.groupRoles)
+      .where(eq(s.groupRoles.groupId, groupId));
+    return rows.map(mapGroupRoleFromRow);
+  }
+
+  async grantAuthority(a: Authority): Promise<void> {
+    // World-boundary check: the holder must live in the same world as
+    // the authority. Without this guard, a crafted scenario (or a bug
+    // in Layer 2 effect compilers) could attach an authority to an
+    // agent/group in a different world. The `authorities` table has
+    // no FK to agents/groups because the holder is polymorphic; we
+    // enforce the invariant here in the one write path instead.
+    if (a.holderKind === 'agent') {
+      const owner = await this.getAgent(a.holderRef).catch(() => null);
+      if (!owner || owner.worldId !== a.worldId) {
+        throw new Error(`grantAuthority: agent holder ${a.holderRef} not in world ${a.worldId}`);
+      }
+    } else if (a.holderKind === 'group') {
+      const group = await this.getGroup(a.holderRef);
+      if (!group || group.worldId !== a.worldId) {
+        throw new Error(`grantAuthority: group holder ${a.holderRef} not in world ${a.worldId}`);
+      }
+    } else {
+      // role: holderRef is "groupId#roleName"
+      const [gid] = a.holderRef.split('#');
+      if (!gid) {
+        throw new Error(`grantAuthority: malformed role holderRef ${a.holderRef}`);
+      }
+      const group = await this.getGroup(gid);
+      if (!group || group.worldId !== a.worldId) {
+        throw new Error(`grantAuthority: role holder ${a.holderRef} not in world ${a.worldId}`);
+      }
+    }
+
+    await this.orm.insert(s.authorities).values({
+      id: a.id,
+      worldId: a.worldId,
+      holderKind: a.holderKind,
+      holderRef: a.holderRef,
+      powersJson: JSON.stringify(a.powers),
+      grantedTick: a.grantedTick,
+      expiresTick: a.expiresTick ?? null,
+      sourceEventId: a.sourceEventId ?? null,
+      revokedTick: a.revokedTick ?? null,
+      revocationEventId: a.revocationEventId ?? null,
+    });
+  }
+
+  async revokeAuthority(id: string, tick: number, eventId: number | null = null): Promise<void> {
+    await this.orm
+      .update(s.authorities)
+      .set({ revokedTick: tick, revocationEventId: eventId })
+      .where(eq(s.authorities.id, id));
+  }
+
+  /**
+   * All authorities for a world that are still in force at `atTick`.
+   * Filters out revoked and expired rows. Pass `atTick = world.currentTick + 1`
+   * when evaluating whether an in-progress action should be authorised.
+   */
+  async getActiveAuthoritiesForWorld(worldId: string, atTick: number): Promise<Authority[]> {
+    const rows = await this.orm
+      .select()
+      .from(s.authorities)
+      .where(
+        and(
+          eq(s.authorities.worldId, worldId),
+          isNull(s.authorities.revokedTick),
+          or(isNull(s.authorities.expiresTick), gte(s.authorities.expiresTick, atTick)),
+        ),
+      );
+    return rows.map(mapAuthorityFromRow);
+  }
+
+  /**
+   * Authorities whose `holder_ref` points at a given holder directly.
+   * Does NOT resolve role-chain (i.e. if agent holds a role whose
+   * holderRef is `groupId#role`, this query won't return it). Callers
+   * that need full resolution should combine this with role + membership
+   * lookups. See enforcer for the resolver.
+   */
+  async getAuthoritiesForHolder(
+    worldId: string,
+    holderKind: AuthorityHolderKind,
+    holderRef: string,
+    atTick: number,
+  ): Promise<Authority[]> {
+    const rows = await this.orm
+      .select()
+      .from(s.authorities)
+      .where(
+        and(
+          eq(s.authorities.worldId, worldId),
+          eq(s.authorities.holderKind, holderKind),
+          eq(s.authorities.holderRef, holderRef),
+          isNull(s.authorities.revokedTick),
+          or(isNull(s.authorities.expiresTick), gte(s.authorities.expiresTick, atTick)),
+        ),
+      );
+    return rows.map(mapAuthorityFromRow);
+  }
+
+  // ============================================================
+  // PROPOSALS + VOTES  (ADR-0009 Layer 2)
+  // ============================================================
+
+  async createProposal(p: Proposal): Promise<void> {
+    await this.orm.insert(s.proposals).values({
+      id: p.id,
+      worldId: p.worldId,
+      sponsorAgentId: p.sponsorAgentId,
+      targetGroupId: p.targetGroupId,
+      title: p.title,
+      rationale: p.rationale,
+      effectsJson: JSON.stringify(p.effects),
+      compiledEffectsJson: p.compiledEffects ? JSON.stringify(p.compiledEffects) : null,
+      openedTick: p.openedTick,
+      deadlineJson: JSON.stringify(p.deadline),
+      procedureOverrideJson: p.procedureOverride ? JSON.stringify(p.procedureOverride) : null,
+      status: p.status,
+      decidedTick: p.decidedTick ?? null,
+      outcomeDetail: p.outcomeDetail ?? null,
+    });
+  }
+
+  async getProposal(id: string): Promise<Proposal | null> {
+    const rows = await this.orm.select().from(s.proposals).where(eq(s.proposals.id, id)).limit(1);
+    return rows[0] ? mapProposalFromRow(rows[0]) : null;
+  }
+
+  async getPendingProposals(worldId: string): Promise<Proposal[]> {
+    const rows = await this.orm
+      .select()
+      .from(s.proposals)
+      .where(and(eq(s.proposals.worldId, worldId), eq(s.proposals.status, 'pending')));
+    return rows.map(mapProposalFromRow);
+  }
+
+  async getProposalsForGroup(groupId: string, status?: ProposalStatus): Promise<Proposal[]> {
+    const whereExpr = status
+      ? and(eq(s.proposals.targetGroupId, groupId), eq(s.proposals.status, status))
+      : eq(s.proposals.targetGroupId, groupId);
+    const rows = await this.orm.select().from(s.proposals).where(whereExpr);
+    return rows.map(mapProposalFromRow);
+  }
+
+  async updateProposalStatus(
+    id: string,
+    status: ProposalStatus,
+    decidedTick: number,
+    outcomeDetail: string | null,
+  ): Promise<void> {
+    await this.orm
+      .update(s.proposals)
+      .set({ status, decidedTick, outcomeDetail })
+      .where(eq(s.proposals.id, id));
+  }
+
+  async updateProposalCompiledEffects(id: string, compiled: Effect[]): Promise<void> {
+    await this.orm
+      .update(s.proposals)
+      .set({ compiledEffectsJson: JSON.stringify(compiled) })
+      .where(eq(s.proposals.id, id));
+  }
+
+  /**
+   * Cast a vote. Overwrites any previous stance by the same voter on
+   * the same proposal (mind-changing is normal in politics). The PK
+   * ensures one row per (proposal, voter).
+   */
+  async castVote(v: Vote): Promise<void> {
+    await this.orm
+      .insert(s.votes)
+      .values({
+        proposalId: v.proposalId,
+        voterAgentId: v.voterAgentId,
+        stance: v.stance,
+        weight: v.weight,
+        castTick: v.castTick,
+        reasoning: v.reasoning ?? null,
+      })
+      .onConflictDoUpdate({
+        target: [s.votes.proposalId, s.votes.voterAgentId],
+        set: {
+          stance: v.stance,
+          weight: v.weight,
+          castTick: v.castTick,
+          reasoning: v.reasoning ?? null,
+        },
+      });
+  }
+
+  async getVotesForProposal(proposalId: string): Promise<Vote[]> {
+    const rows = await this.orm.select().from(s.votes).where(eq(s.votes.proposalId, proposalId));
+    return rows.map(mapVoteFromRow);
+  }
+
+  /**
+   * Fast check for ActivationService: does this agent currently have
+   * ANY pending proposal in ANY active group they belong to where
+   * they have not yet cast a vote? Single indexed query — O(1) in
+   * round-trips regardless of how many groups / proposals exist.
+   */
+  async hasUncastGroupVote(agentId: string): Promise<boolean> {
+    const db = this.db;
+    const row = db
+      .query<{ n: number }, [string, string]>(
+        `SELECT 1 AS n
+           FROM proposals p
+           JOIN group_memberships m
+             ON m.group_id = p.target_group_id
+            AND m.agent_id = ?
+            AND m.left_tick IS NULL
+           LEFT JOIN votes v
+             ON v.proposal_id = p.id
+            AND v.voter_agent_id = ?
+          WHERE p.status = 'pending'
+            AND v.proposal_id IS NULL
+          LIMIT 1`,
+      )
+      .get(agentId, agentId);
+    return row !== null;
+  }
+
+  // ============================================================
   // RAW ACCESS (for advanced queries)
   // ============================================================
 
@@ -646,6 +1048,7 @@ function mapAgentFromRow(r: typeof s.agents.$inferSelect): Agent {
     deathTick: r.deathTick,
     parentIds: r.parentIdsJson ? JSON.parse(r.parentIdsJson) : null,
     createdAt: r.createdAt,
+    lastActiveTick: r.lastActiveTick,
   };
 }
 
@@ -693,6 +1096,8 @@ function mapRuleFromRow(r: typeof s.rules.$inferSelect): Rule {
     economicCostFormula: r.economicCostFormula ?? undefined,
     active: r.active,
     priority: r.priority,
+    scopeKind: r.scopeKind as Rule['scopeKind'],
+    scopeRef: r.scopeRef,
     scope: r.scopeJson ? JSON.parse(r.scopeJson) : undefined,
     createdAt: r.createdAt,
     createdByTick: r.createdByTick,
@@ -746,22 +1151,6 @@ function mapMessageFromRow(r: typeof s.messages.$inferSelect): Message {
   };
 }
 
-function mapMemoryFromRow(r: typeof s.agentMemories.$inferSelect): AgentMemory {
-  return {
-    id: r.id,
-    agentId: r.agentId,
-    createdTick: r.createdTick,
-    memoryType: r.memoryType as MemoryType,
-    content: r.content,
-    importance: r.importance,
-    decay: r.decay,
-    relatedEventId: r.relatedEventId,
-    aboutAgentId: r.aboutAgentId,
-    embedding: r.embedding ? (r.embedding as Uint8Array) : null,
-    lastAccessedTick: r.lastAccessedTick,
-  };
-}
-
 function mapRelationshipFromRow(r: typeof s.relationships.$inferSelect): Relationship {
   return {
     agentAId: r.agentAId,
@@ -785,5 +1174,89 @@ function mapInterventionFromRow(r: typeof s.godInterventions.$inferSelect): GodI
     compiledEffects: r.compiledEffectsJson ? JSON.parse(r.compiledEffectsJson) : null,
     applied: r.applied,
     notes: r.notes,
+  };
+}
+
+function mapGroupFromRow(r: typeof s.groups.$inferSelect): Group {
+  return {
+    id: r.id,
+    worldId: r.worldId,
+    name: r.name,
+    description: r.description,
+    procedureKind: r.procedureKind as Group['procedureKind'],
+    procedureConfig: r.procedureConfigJson ? JSON.parse(r.procedureConfigJson) : {},
+    joinPredicate: r.joinPredicate,
+    successionKind: (r.successionKind as Group['successionKind']) ?? null,
+    visibilityPolicy: r.visibilityPolicy as Group['visibilityPolicy'],
+    foundedTick: r.foundedTick,
+    dissolvedTick: r.dissolvedTick,
+    createdAt: r.createdAt,
+  };
+}
+
+function mapMembershipFromRow(r: typeof s.groupMemberships.$inferSelect): GroupMembership {
+  return {
+    groupId: r.groupId,
+    agentId: r.agentId,
+    joinedTick: r.joinedTick,
+    leftTick: r.leftTick,
+  };
+}
+
+function mapGroupRoleFromRow(r: typeof s.groupRoles.$inferSelect): GroupRole {
+  return {
+    groupId: r.groupId,
+    roleName: r.roleName,
+    holderAgentId: r.holderAgentId,
+    assignedTick: r.assignedTick,
+    votingWeight: r.votingWeight,
+    scopeRef: r.scopeRef,
+  };
+}
+
+function mapAuthorityFromRow(r: typeof s.authorities.$inferSelect): Authority {
+  return {
+    id: r.id,
+    worldId: r.worldId,
+    holderKind: r.holderKind as Authority['holderKind'],
+    holderRef: r.holderRef,
+    powers: JSON.parse(r.powersJson) as AuthorityPower[],
+    grantedTick: r.grantedTick,
+    expiresTick: r.expiresTick,
+    sourceEventId: r.sourceEventId,
+    revokedTick: r.revokedTick,
+    revocationEventId: r.revocationEventId,
+  };
+}
+
+function mapProposalFromRow(r: typeof s.proposals.$inferSelect): Proposal {
+  return {
+    id: r.id,
+    worldId: r.worldId,
+    sponsorAgentId: r.sponsorAgentId,
+    targetGroupId: r.targetGroupId,
+    title: r.title,
+    rationale: r.rationale,
+    effects: JSON.parse(r.effectsJson) as Effect[],
+    compiledEffects: r.compiledEffectsJson ? (JSON.parse(r.compiledEffectsJson) as Effect[]) : null,
+    openedTick: r.openedTick,
+    deadline: JSON.parse(r.deadlineJson) as Proposal['deadline'],
+    procedureOverride: r.procedureOverrideJson
+      ? (JSON.parse(r.procedureOverrideJson) as Record<string, unknown>)
+      : null,
+    status: r.status as ProposalStatus,
+    decidedTick: r.decidedTick,
+    outcomeDetail: r.outcomeDetail,
+  };
+}
+
+function mapVoteFromRow(r: typeof s.votes.$inferSelect): Vote {
+  return {
+    proposalId: r.proposalId,
+    voterAgentId: r.voterAgentId,
+    stance: r.stance as Vote['stance'],
+    weight: r.weight,
+    castTick: r.castTick,
+    reasoning: r.reasoning,
   };
 }

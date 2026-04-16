@@ -68,6 +68,7 @@ export const agents = sqliteTable(
     birthTick: integer('birth_tick').notNull().default(0),
     deathTick: integer('death_tick'),
     parentIdsJson: text('parent_ids_json'),
+    lastActiveTick: integer('last_active_tick'),
     createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
   },
   (t) => ({
@@ -158,6 +159,10 @@ export const rules = sqliteTable(
     economicCostFormula: text('economic_cost_formula'),
     active: integer('active', { mode: 'boolean' }).notNull().default(true),
     priority: integer('priority').notNull().default(100),
+    scopeKind: text('scope_kind', { enum: ['world', 'group', 'agent', 'location'] })
+      .notNull()
+      .default('world'),
+    scopeRef: text('scope_ref'),
     scopeJson: text('scope_json'),
     createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
     createdByTick: integer('created_by_tick'),
@@ -238,29 +243,6 @@ export const messages = sqliteTable(
   }),
 );
 
-export const agentMemories = sqliteTable(
-  'agent_memories',
-  {
-    id: integer('id').primaryKey({ autoIncrement: true }),
-    agentId: text('agent_id')
-      .notNull()
-      .references(() => agents.id),
-    createdTick: integer('created_tick').notNull(),
-    memoryType: text('memory_type').notNull(),
-    content: text('content').notNull(),
-    importance: real('importance').notNull().default(0.5),
-    decay: real('decay').notNull().default(1.0),
-    relatedEventId: integer('related_event_id'),
-    aboutAgentId: text('about_agent_id'),
-    embedding: blob('embedding'),
-    lastAccessedTick: integer('last_accessed_tick'),
-  },
-  (t) => ({
-    agentIdx: index('idx_memory_agent').on(t.agentId, t.createdTick),
-    importanceIdx: index('idx_memory_importance').on(t.agentId, t.importance),
-  }),
-);
-
 export const relationships = sqliteTable(
   'relationships',
   {
@@ -335,5 +317,150 @@ export const tickSnapshots = sqliteTable(
   },
   (t) => ({
     pk: primaryKey({ columns: [t.worldId, t.tick] }),
+  }),
+);
+
+// ============================================================
+// GOVERNANCE (ADR-0009, Layer 1)
+// ============================================================
+
+export const groups = sqliteTable(
+  'groups',
+  {
+    id: text('id').primaryKey(),
+    worldId: text('world_id')
+      .notNull()
+      .references(() => worlds.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    description: text('description').notNull(),
+    procedureKind: text('procedure_kind', {
+      enum: ['decree', 'vote', 'consensus', 'lottery', 'delegated'],
+    }).notNull(),
+    procedureConfigJson: text('procedure_config_json'),
+    joinPredicate: text('join_predicate'),
+    successionKind: text('succession_kind', {
+      enum: ['vote', 'inheritance', 'appointment', 'combat', 'lottery'],
+    }),
+    visibilityPolicy: text('visibility_policy', { enum: ['open', 'closed', 'opaque'] })
+      .notNull()
+      .default('open'),
+    foundedTick: integer('founded_tick').notNull(),
+    dissolvedTick: integer('dissolved_tick'),
+    createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => ({
+    worldIdx: index('idx_groups_world').on(t.worldId),
+  }),
+);
+
+export const groupMemberships = sqliteTable(
+  'group_memberships',
+  {
+    groupId: text('group_id')
+      .notNull()
+      .references(() => groups.id),
+    agentId: text('agent_id')
+      .notNull()
+      .references(() => agents.id),
+    joinedTick: integer('joined_tick').notNull(),
+    leftTick: integer('left_tick'),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.groupId, t.agentId, t.joinedTick] }),
+    agentIdx: index('idx_memberships_agent').on(t.agentId),
+    activeIdx: index('idx_memberships_active').on(t.groupId, t.leftTick),
+  }),
+);
+
+export const groupRoles = sqliteTable(
+  'group_roles',
+  {
+    groupId: text('group_id')
+      .notNull()
+      .references(() => groups.id),
+    roleName: text('role_name').notNull(),
+    holderAgentId: text('holder_agent_id').references(() => agents.id),
+    assignedTick: integer('assigned_tick'),
+    votingWeight: real('voting_weight').notNull().default(1.0),
+    scopeRef: text('scope_ref'),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.groupId, t.roleName] }),
+  }),
+);
+
+export const authorities = sqliteTable(
+  'authorities',
+  {
+    id: text('id').primaryKey(),
+    worldId: text('world_id')
+      .notNull()
+      .references(() => worlds.id, { onDelete: 'cascade' }),
+    holderKind: text('holder_kind', { enum: ['group', 'agent', 'role'] }).notNull(),
+    holderRef: text('holder_ref').notNull(),
+    powersJson: text('powers_json').notNull(),
+    grantedTick: integer('granted_tick').notNull(),
+    expiresTick: integer('expires_tick'),
+    sourceEventId: integer('source_event_id').references(() => events.id),
+    revokedTick: integer('revoked_tick'),
+    revocationEventId: integer('revocation_event_id').references(() => events.id),
+  },
+  (t) => ({
+    worldIdx: index('idx_authorities_world').on(t.worldId),
+    holderIdx: index('idx_authorities_holder').on(t.worldId, t.holderKind, t.holderRef),
+  }),
+);
+
+export const proposals = sqliteTable(
+  'proposals',
+  {
+    id: text('id').primaryKey(),
+    worldId: text('world_id')
+      .notNull()
+      .references(() => worlds.id, { onDelete: 'cascade' }),
+    sponsorAgentId: text('sponsor_agent_id')
+      .notNull()
+      .references(() => agents.id),
+    targetGroupId: text('target_group_id')
+      .notNull()
+      .references(() => groups.id),
+    title: text('title').notNull(),
+    rationale: text('rationale').notNull(),
+    effectsJson: text('effects_json').notNull(),
+    compiledEffectsJson: text('compiled_effects_json'),
+    openedTick: integer('opened_tick').notNull(),
+    deadlineJson: text('deadline_json').notNull(),
+    procedureOverrideJson: text('procedure_override_json'),
+    status: text('status', {
+      enum: ['pending', 'adopted', 'rejected', 'withdrawn', 'expired'],
+    })
+      .notNull()
+      .default('pending'),
+    decidedTick: integer('decided_tick'),
+    outcomeDetail: text('outcome_detail'),
+  },
+  (t) => ({
+    worldStatusIdx: index('idx_proposals_world_status').on(t.worldId, t.status),
+    groupIdx: index('idx_proposals_group').on(t.targetGroupId, t.status),
+  }),
+);
+
+export const votes = sqliteTable(
+  'votes',
+  {
+    proposalId: text('proposal_id')
+      .notNull()
+      .references(() => proposals.id),
+    voterAgentId: text('voter_agent_id')
+      .notNull()
+      .references(() => agents.id),
+    stance: text('stance', { enum: ['for', 'against', 'abstain'] }).notNull(),
+    weight: real('weight').notNull().default(1.0),
+    castTick: integer('cast_tick').notNull(),
+    reasoning: text('reasoning'),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.proposalId, t.voterAgentId] }),
+    proposalIdx: index('idx_votes_proposal').on(t.proposalId),
   }),
 );

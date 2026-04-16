@@ -3,10 +3,31 @@
  *
  * Each world has an action_schemas table. We turn each row into a Tool
  * the agent can call. Execution mutates the DB via WorldStore.
+ *
+ * ## Memory tools
+ *
+ * The agent curates its own memory through three tools — `memory_add`,
+ * `memory_replace`, `memory_remove` — backed by a plain markdown file
+ * per character (hermes-agent pattern). There is intentionally no
+ * `memory_read` or `recall` tool: the full memory file is embedded in
+ * the system prompt at session start as a frozen snapshot, so reading
+ * is free and prefix-cacheable. No embeddings, no keyword scoring —
+ * the agent's own compression of what matters is the authority.
  */
 
-import type { ActionSchema, Agent, World } from '@chronicle/core';
-import type { WorldStore } from '@chronicle/engine';
+import type {
+  ActionSchema,
+  Agent,
+  Effect,
+  Group,
+  Proposal,
+  ProposalDeadline,
+  VoteStance,
+  World,
+} from '@chronicle/core';
+import { groupId as newGroupId, proposalId as newProposalId } from '@chronicle/core';
+import type { MemoryFileStore, WorldStore } from '@chronicle/engine';
+import { validateEffects } from '@chronicle/engine';
 import { z } from 'zod';
 
 // Pi-agent Tool interface (inlined to avoid tight coupling if API shifts).
@@ -22,6 +43,11 @@ export interface ExecutionContext {
   character: Agent;
   tick: number;
   store: WorldStore;
+  /**
+   * File-backed memory for the character. Always present — core memory
+   * tools would be useless without it, so callers build one up-front.
+   */
+  memory: MemoryFileStore;
 }
 
 export interface ExecuteResult {
@@ -35,7 +61,21 @@ export interface ExecuteResult {
 export type AnyAgentTool = AgentTool<any>;
 
 /** Action tool names reserved by core tools — world schemas can't shadow these. */
-const CORE_TOOL_NAMES = new Set(['observe', 'think', 'speak', 'remember', 'recall']);
+const CORE_TOOL_NAMES = new Set([
+  'observe',
+  'think',
+  'speak',
+  'memory_add',
+  'memory_replace',
+  'memory_remove',
+  'form_group',
+  'join_group',
+  'leave_group',
+  'propose',
+  'vote',
+  'withdraw_proposal',
+  'pass',
+]);
 
 export function compileWorldTools(
   _world: World,
@@ -43,16 +83,25 @@ export function compileWorldTools(
   store: WorldStore,
   schemas: ActionSchema[],
 ): AnyAgentTool[] {
-  // Always register core tools. `remember` + `recall` let an agent manage
-  // its own memory — hermes-agent's key pattern. Agents with an explicit
-  // memory surface feel markedly more coherent than ones that only have
-  // an externally-injected retrieval.
+  // Always register core tools. The `memory_*` trio is the character's
+  // only durable memory surface — everything the agent wants future
+  // selves to see must be committed via memory_add. The `*_group` trio
+  // is the minimum viable governance surface (ADR-0009 Layer 1) —
+  // collective identity. Proposals + votes + effects come in Layer 2.
   const tools: AnyAgentTool[] = [
     coreObserve(),
     coreThink(),
     coreSpeak(),
-    coreRemember(),
-    coreRecall(),
+    corePass(),
+    coreMemoryAdd(),
+    coreMemoryReplace(),
+    coreMemoryRemove(),
+    coreFormGroup(),
+    coreJoinGroup(),
+    coreLeaveGroup(),
+    corePropose(),
+    coreVote(),
+    coreWithdrawProposal(),
   ];
 
   // Plus schema-driven world-specific tools
@@ -79,28 +128,59 @@ function coreObserve(): AgentTool<Record<string, never>> {
   };
 }
 
+/**
+ * Internal monologue. The thought lives in the agent's pi-agent
+ * conversation history (so it influences the next turn) but is NOT
+ * committed to the durable memory file — that's what `memory_add` is
+ * for. This keeps the memory file a short, agent-curated summary
+ * rather than a dumping ground for every stray thought.
+ */
 function coreThink(): AgentTool<{ thought: string }> {
   return {
     name: 'think',
     description:
-      'Internal thought, heard by no one. Records as a private memory. Use this to plan, worry, reflect.',
+      'Private inner monologue, heard by no one. Appears in your own conversation history so you carry it into the next moment, but is NOT durably saved. If a thought should outlive this turn, call memory_add after.',
     parametersSchema: z.object({
       thought: z.string().min(1).max(2000),
     }),
-    execute: async ({ thought }, ctx) => {
-      await ctx.store.addMemory({
-        agentId: ctx.character.id,
-        createdTick: ctx.tick,
-        memoryType: 'thought',
-        content: thought,
-        importance: 0.4,
-        decay: 1.0,
-        relatedEventId: null,
-        aboutAgentId: null,
-        embedding: null,
-        lastAccessedTick: null,
+    execute: async () => ({ ok: true, detail: 'thought_noted' }),
+  };
+}
+
+/**
+ * Deliberate non-action (ADR-0010). The agent was given the floor, saw
+ * the turn prompt, and chose to stay silent. This costs a turn — LLM
+ * was prompted — but the mechanical outcome is "nothing happened." The
+ * dormancy clock resets because the agent *did* take the floor.
+ *
+ * Distinct from engine-initiated dormancy: that one skips takeTurn
+ * entirely and saves the LLM call. `pass` is the agent's way of
+ * saying "present, listening, declining to contribute" —
+ * narratively different from being asleep.
+ */
+function corePass(): AgentTool<{ reason?: string }> {
+  return {
+    name: 'pass',
+    description:
+      "Decline to act this turn while remaining present. Use when you're listening / observing and genuinely have nothing worth saying right now. This is not the same as being absent — you saw what's happening and chose to stay quiet. Optional `reason` is recorded for the log.",
+    parametersSchema: z.object({
+      reason: z.string().max(500).optional(),
+    }),
+    execute: async ({ reason }, ctx) => {
+      // Record directly at the tool layer rather than relying on the
+      // runtime adapter to shape a `ProposedAction` with actionName:
+      // 'pass' — the engine's standard action-event path fires only
+      // when the adapter returns an action, and we want the pass to
+      // be audit-visible regardless of adapter shape (ADR-0010).
+      await ctx.store.recordEvent({
+        worldId: ctx.world.id,
+        tick: ctx.tick,
+        eventType: 'action',
+        actorId: ctx.character.id,
+        data: { action: 'pass', reason: reason ?? null },
+        tokenCost: 0,
       });
-      return { ok: true };
+      return { ok: true, detail: 'passed' };
     },
   };
 }
@@ -143,129 +223,495 @@ function coreSpeak(): AgentTool<{ to: string; content: string; tone?: string }> 
 }
 
 /**
- * Explicit, agent-driven memory write. Distinct from `think` — think
- * records a fleeting inner-voice line with default importance 0.4;
- * remember is "I want to make sure I hold onto this" with caller-chosen
- * importance and typed memory (reflection / goal / belief_about_other).
+ * Commit an entry to the character's durable memory file. The file
+ * contents are injected into the system prompt at the START of each
+ * session — so what you add here shapes every future turn. Use it
+ * sparingly: promises, betrayals, settled goals, beliefs about others.
+ * Ephemeral reactions belong in `think`, not here.
  *
- * The agent decides what's worth remembering. That's the whole point.
+ * Rejects when the file would exceed its char limit. The agent must
+ * `memory_replace` or `memory_remove` to free room — this pressure is
+ * what forces the agent to compress, which is the entire point of the
+ * design. No retrieval, no scoring: the file IS the working set.
  */
-function coreRemember(): AgentTool<{
-  content: string;
-  importance?: number;
-  aboutAgent?: string;
-  kind?: 'reflection' | 'goal' | 'belief_about_other';
-}> {
+function coreMemoryAdd(): AgentTool<{ content: string }> {
   return {
-    name: 'remember',
+    name: 'memory_add',
     description:
-      'Record something to your long-term memory. Use this when a moment feels important — a promise, a betrayal, a plan, an insight about someone. Importance is 0.0–1.0 (default 0.6). Kind: "reflection" (default) / "goal" / "belief_about_other".',
+      'Append an entry to your durable memory file. This memory will appear in your context at the start of every future session. Keep entries short and specific — promises, betrayals, settled goals, beliefs about others. If the file is full, use memory_replace or memory_remove first.',
     parametersSchema: z.object({
       content: z.string().min(1).max(2000),
-      importance: z.number().min(0).max(1).optional(),
-      aboutAgent: z.string().optional(),
-      kind: z.enum(['reflection', 'goal', 'belief_about_other']).optional(),
     }),
-    execute: async ({ content, importance, aboutAgent, kind }, ctx) => {
-      const aboutAgentId = aboutAgent ? await resolveAgentByName(ctx, aboutAgent) : null;
-      await ctx.store.addMemory({
-        agentId: ctx.character.id,
-        createdTick: ctx.tick,
-        memoryType: kind ?? 'reflection',
-        content,
-        importance: importance ?? 0.6,
-        decay: 1.0,
-        relatedEventId: null,
-        aboutAgentId,
-        embedding: null,
-        lastAccessedTick: null,
-      });
+    execute: async ({ content }, ctx) => {
+      return ctx.memory.add(ctx.world.id, ctx.character.id, content);
+    },
+  };
+}
+
+/**
+ * Replace an entry in the memory file. `old_text` is a short unique
+ * substring that picks out one entry; we rewrite that entry to
+ * `new_content`. Ambiguous matches (0 or >1 entries) fail hard — the
+ * agent must re-narrow rather than silently editing the wrong thing.
+ */
+function coreMemoryReplace(): AgentTool<{ old_text: string; new_content: string }> {
+  return {
+    name: 'memory_replace',
+    description:
+      'Rewrite one entry in your memory file. old_text is a short unique substring that picks out which entry to edit. Use this to compress older entries as beliefs evolve or the file fills up.',
+    parametersSchema: z.object({
+      old_text: z.string().min(1).max(500),
+      new_content: z.string().min(1).max(2000),
+    }),
+    execute: async ({ old_text, new_content }, ctx) => {
+      return ctx.memory.replace(ctx.world.id, ctx.character.id, old_text, new_content);
+    },
+  };
+}
+
+/** Delete an entry. Same uniqueness rules as `memory_replace`. */
+function coreMemoryRemove(): AgentTool<{ old_text: string }> {
+  return {
+    name: 'memory_remove',
+    description:
+      'Delete one entry from your memory file. old_text is a short unique substring that picks out which entry to remove. Use this when a memory is outdated or no longer serves you.',
+    parametersSchema: z.object({
+      old_text: z.string().min(1).max(500),
+    }),
+    execute: async ({ old_text }, ctx) => {
+      return ctx.memory.remove(ctx.world.id, ctx.character.id, old_text);
+    },
+  };
+}
+
+// ============================================================
+// Governance tools (ADR-0009 Layer 1)
+//
+// These three let agents form collective identity at runtime. Layer 2
+// (proposals + votes + effects) will make those collectives causally
+// powerful — for now they're named groupings with procedure metadata
+// that scoped rules and future proposals will target.
+// ============================================================
+
+/**
+ * Found a new group. Caller becomes founding member and, for `decree`
+ * procedure, automatically takes the configured `holderRole`. Group
+ * names are unique within a world; duplicates fail rather than silently
+ * aliasing.
+ */
+function coreFormGroup(): AgentTool<{
+  name: string;
+  description: string;
+  procedure: 'decree' | 'vote' | 'consensus' | 'lottery' | 'delegated';
+  procedure_config?: Record<string, unknown>;
+  visibility?: 'open' | 'closed' | 'opaque';
+}> {
+  return {
+    name: 'form_group',
+    description:
+      'Found a new group — a council, faction, guild, conspiracy, whatever. You become the founding member. Pick a decision procedure: "decree" (one voice decides — tyranny or chair-led council), "vote" (majority), "consensus" (any dissent blocks), "lottery" (random member decides), or "delegated" (this group defers to another group\'s decision — used for federations / alliances; procedure_config must carry toGroupId).',
+    parametersSchema: z.object({
+      name: z.string().min(1).max(80),
+      description: z.string().min(1).max(500),
+      procedure: z.enum(['decree', 'vote', 'consensus', 'lottery', 'delegated']),
+      procedure_config: z.record(z.unknown()).optional(),
+      visibility: z.enum(['open', 'closed', 'opaque']).optional(),
+    }),
+    execute: async ({ name, description, procedure, procedure_config, visibility }, ctx) => {
+      const existing = await ctx.store.getGroupsForWorld(ctx.world.id);
+      if (existing.some((g) => g.name.toLowerCase() === name.toLowerCase())) {
+        return { ok: false, detail: `duplicate_group_name:${name}` };
+      }
+
+      // `delegated` groups must name the group they defer to, and that
+      // group must live in this world. Without this guard a delegation
+      // cycle or cross-world reference would blow up at Layer-2 resolve.
+      if (procedure === 'delegated') {
+        const toGroupId = (procedure_config?.toGroupId as string | undefined)?.trim();
+        if (!toGroupId) {
+          return { ok: false, detail: 'delegated_requires_toGroupId' };
+        }
+        const target = await ctx.store.getGroup(toGroupId);
+        if (!target || target.worldId !== ctx.world.id) {
+          return { ok: false, detail: `no_target_group:${toGroupId}` };
+        }
+      }
+
+      const group: Group = {
+        id: newGroupId(),
+        worldId: ctx.world.id,
+        name,
+        description,
+        procedureKind: procedure,
+        procedureConfig: procedure_config ?? defaultProcedureConfig(procedure),
+        joinPredicate: null,
+        successionKind: null,
+        visibilityPolicy: visibility ?? 'open',
+        foundedTick: ctx.tick,
+        dissolvedTick: null,
+        createdAt: new Date().toISOString(),
+      };
+      await ctx.store.createGroup(group);
+      await ctx.store.addMembership(group.id, ctx.character.id, ctx.tick);
+
+      // For decree procedures, the founder occupies the chair role so
+      // the group's "one voice" has someone actually filling it.
+      if (procedure === 'decree') {
+        const roleName = (procedure_config?.holderRole as string | undefined)?.trim() || 'chair';
+        await ctx.store.upsertGroupRole({
+          groupId: group.id,
+          roleName,
+          holderAgentId: ctx.character.id,
+          assignedTick: ctx.tick,
+          votingWeight: 1.0,
+          scopeRef: null,
+        });
+      }
+
       return {
         ok: true,
-        detail: `remembered:${kind ?? 'reflection'}:importance=${(importance ?? 0.6).toFixed(2)}`,
+        detail: `group_formed:${group.id}`,
+        sideEffects: { groupId: group.id, name: group.name, procedure },
       };
     },
   };
 }
 
 /**
- * Query the agent's own memory store. Uses the same recency-×-importance-
- * ×-keyword-overlap scoring as the passive `MemoryService` so both paths
- * agree on relevance. An agent calling `recall` every turn is a sign the
- * passive retrieval isn't giving them enough context — worth watching
- * in telemetry once we have it.
- *
- * Returns up to `k` formatted memory lines in `detail`. Mutates
- * `lastAccessedTick` on each returned memory so decay scoring rewards
- * what the agent actually uses.
+ * Request membership in an existing group. Fails if already a member,
+ * if the group has a join predicate the caller doesn't satisfy, or if
+ * the group doesn't exist / is dissolved. (Predicate evaluation and
+ * invitation-gating are Layer 2; Layer 1 honors only predicate=null.)
  */
-function coreRecall(): AgentTool<{ query: string; k?: number }> {
+function coreJoinGroup(): AgentTool<{ group_id: string }> {
   return {
-    name: 'recall',
+    name: 'join_group',
     description:
-      "Search your own memory. Use this when you're not sure if you've encountered something before, or want to remind yourself what you know about someone or some topic. Returns up to K matching memories (default 5, max 20).",
+      'Join an existing group by id. Fails if the group is gated (requires an invitation or predicate you do not satisfy) or if you are already a member.',
     parametersSchema: z.object({
-      query: z.string().min(1).max(500),
-      k: z.number().int().min(1).max(20).optional(),
+      group_id: z.string().min(1),
     }),
-    execute: async ({ query, k }, ctx) => {
-      const limit = k ?? 5;
-      const memories = await ctx.store.getMemoriesForAgent(ctx.character.id, 200);
-      if (memories.length === 0) {
-        return { ok: true, detail: 'no_memories' };
+    execute: async ({ group_id }, ctx) => {
+      const group = await ctx.store.getGroup(group_id);
+      if (!group) return { ok: false, detail: `no_group:${group_id}` };
+      if (group.dissolvedTick !== null) return { ok: false, detail: 'group_dissolved' };
+      if (group.worldId !== ctx.world.id) return { ok: false, detail: 'cross_world_group' };
+
+      if (await ctx.store.isMember(group.id, ctx.character.id)) {
+        return { ok: false, detail: 'already_member' };
       }
-      const queryTokens = memoryTokenize(query);
-      const scored = memories
-        .map((m) => ({ m, score: scoreMemoryForRecall(m, ctx.tick, queryTokens) }))
-        .sort((a, b) => b.score - a.score)
-        .slice(0, limit);
 
-      const lines = scored.map(({ m, score }) => {
-        const age = ctx.tick - m.createdTick;
-        const about = m.aboutAgentId ? ` [about:${m.aboutAgentId}]` : '';
-        return `[t${m.createdTick} · ${age}t ago · ${m.memoryType}${about} · score=${score.toFixed(2)}] ${m.content}`;
-      });
+      // Gated groups require Layer-2 invitation / predicate evaluation.
+      // In Layer 1 we simply refuse; a scenario author can still seed
+      // members directly via the world-compiler / store.
+      if (group.joinPredicate !== null) {
+        return { ok: false, detail: 'gated_group_requires_invitation' };
+      }
 
-      // Touch lastAccessedTick on the returned memories so retrieval
-      // scoring rewards the memories the agent is actually using.
-      for (const { m } of scored) {
-        if (typeof m.id === 'number') {
-          await ctx.store.updateMemoryAccessed(m.id, ctx.tick);
+      try {
+        await ctx.store.addMembership(group.id, ctx.character.id, ctx.tick);
+      } catch (err) {
+        // Another concurrent join_group won the race — the unique index
+        // on (group_id, agent_id) WHERE left_tick IS NULL caught it.
+        // Surface the same detail string a same-turn duplicate would see.
+        if (err instanceof Error && err.name === 'AlreadyMemberError') {
+          return { ok: false, detail: 'already_member' };
         }
+        throw err;
       }
-
-      return { ok: true, detail: `recalled:${scored.length}\n${lines.join('\n')}` };
+      return { ok: true, detail: `joined:${group.id}` };
     },
   };
 }
 
-// Shared with MemoryService's recency × importance × overlap scoring so
-// agent-initiated and engine-initiated retrieval agree.
-function memoryTokenize(text: string): Set<string> {
-  return new Set(
-    text
-      .toLowerCase()
-      .replace(/[^a-z0-9\s\u4e00-\u9fff]/g, ' ')
-      .split(/\s+/)
-      .filter((t) => t.length >= 2),
-  );
+/**
+ * Leave a group the caller belongs to. Vacates any role the caller
+ * currently holds in that group (successor logic is Layer 2).
+ */
+function coreLeaveGroup(): AgentTool<{ group_id: string }> {
+  return {
+    name: 'leave_group',
+    description:
+      'Resign from a group. Any role you held in the group is vacated (successor is decided by the group on its own schedule).',
+    parametersSchema: z.object({
+      group_id: z.string().min(1),
+    }),
+    execute: async ({ group_id }, ctx) => {
+      const group = await ctx.store.getGroup(group_id);
+      if (!group) return { ok: false, detail: `no_group:${group_id}` };
+      if (!(await ctx.store.isMember(group.id, ctx.character.id))) {
+        return { ok: false, detail: 'not_a_member' };
+      }
+
+      await ctx.store.removeMembership(group.id, ctx.character.id, ctx.tick);
+
+      // Vacate any role this agent held in this group.
+      const roles = await ctx.store.getRolesForGroup(group.id);
+      for (const role of roles) {
+        if (role.holderAgentId === ctx.character.id) {
+          await ctx.store.upsertGroupRole({
+            groupId: group.id,
+            roleName: role.roleName,
+            holderAgentId: null,
+            assignedTick: ctx.tick,
+            votingWeight: role.votingWeight,
+            scopeRef: role.scopeRef,
+          });
+        }
+      }
+
+      return { ok: true, detail: `left:${group.id}` };
+    },
+  };
 }
 
-function scoreMemoryForRecall(
-  m: { createdTick: number; importance: number; content: string },
-  currentTick: number,
-  queryTokens: Set<string>,
-): number {
-  const age = currentTick - m.createdTick;
-  const recency = Math.exp(-age / 50);
-  const contentTokens = memoryTokenize(m.content);
-  let overlap = 0;
-  for (const t of queryTokens) if (contentTokens.has(t)) overlap++;
-  const similarity =
-    queryTokens.size === 0 || contentTokens.size === 0
-      ? 0
-      : overlap / Math.max(queryTokens.size, contentTokens.size);
-  return 0.45 * recency + 0.35 * m.importance + 0.2 * similarity;
+// ============================================================
+// Proposal tools (ADR-0009 Layer 2)
+// ============================================================
+
+// JSON schema describing an Effect. We accept a narrow subset at the
+// tool boundary — full structural validation happens in
+// `validateEffects` once the proposal hits the store. Keeping the Zod
+// schema shallow lets the tool surface stay readable for the LLM.
+// The double-cast via `unknown` is required because the permissive
+// passthrough schema doesn't structurally match the discriminated
+// union — the strict validation lives downstream in EffectRegistry.
+const EffectSchema = z
+  .object({
+    kind: z.string(),
+  })
+  .passthrough() as unknown as z.ZodType<Effect>;
+
+const DeadlineSchema: z.ZodType<ProposalDeadline> = z.union([
+  z.object({ kind: z.literal('tick'), at: z.number().int().positive() }),
+  z.object({ kind: z.literal('quorum'), need: z.number().int().positive() }),
+  z.object({ kind: z.literal('all_voted') }),
+  z.object({
+    kind: z.literal('any_of'),
+    options: z.array(z.lazy(() => DeadlineSchema)),
+  }),
+]);
+
+/**
+ * Submit a motion to a group the caller belongs to. The motion carries
+ * a structured effect payload — what would change if it passed. Effects
+ * are validated up-front through EffectRegistry; a malformed proposal
+ * is rejected before any votes can be gathered, so voters never reason
+ * about an impossible outcome.
+ */
+function corePropose(): AgentTool<{
+  target_group_id: string;
+  title: string;
+  rationale: string;
+  effects: Effect[];
+  deadline?: ProposalDeadline;
+}> {
+  return {
+    name: 'propose',
+    description:
+      'Submit a motion to a group you belong to. Include a clear title, a rationale (your case for why the group should adopt this), and an effects list — the structured state changes that will apply IF the proposal is adopted. Use short, specific effects. Deadline defaults to 10 ticks from now.',
+    parametersSchema: z.object({
+      target_group_id: z.string().min(1),
+      title: z.string().min(1).max(200),
+      rationale: z.string().min(1).max(2000),
+      effects: z.array(EffectSchema).min(1).max(10),
+      deadline: DeadlineSchema.optional(),
+    }),
+    execute: async ({ target_group_id, title, rationale, effects, deadline }, ctx) => {
+      const group = await ctx.store.getGroup(target_group_id);
+      if (!group || group.worldId !== ctx.world.id) {
+        return { ok: false, detail: `no_group:${target_group_id}` };
+      }
+      if (group.dissolvedTick !== null) return { ok: false, detail: 'group_dissolved' };
+
+      // Only members may propose by default. Authority-gated proposal
+      // rights (e.g. "only nobles may legislate") live in scoped rules;
+      // the Layer-1 authority override path lets them bypass this check
+      // through the RuleEnforcer — this tool only enforces the baseline.
+      if (!(await ctx.store.isMember(group.id, ctx.character.id))) {
+        return { ok: false, detail: 'not_a_member' };
+      }
+
+      // Validate effects before persisting. A failing validation returns
+      // a crisp reason so the LLM can correct its payload on retry.
+      const validation = await validateEffects(effects, {
+        store: ctx.store,
+        world: ctx.world,
+        tick: ctx.tick,
+      });
+      if (validation) {
+        return {
+          ok: false,
+          detail: `effect_invalid:${validation.index}:${validation.reason}`,
+        };
+      }
+
+      const proposal: Proposal = {
+        id: newProposalId(),
+        worldId: ctx.world.id,
+        sponsorAgentId: ctx.character.id,
+        targetGroupId: group.id,
+        title,
+        rationale,
+        effects,
+        // Shallow clone so that future compilation passes (which may
+        // normalise or rewrite effects) cannot retroactively mutate the
+        // sponsor's original `effects` array via shared reference.
+        compiledEffects: [...effects],
+        openedTick: ctx.tick,
+        deadline: deadline ?? { kind: 'tick', at: ctx.tick + 10 },
+        procedureOverride: null,
+        status: 'pending',
+        decidedTick: null,
+        outcomeDetail: null,
+      };
+      await ctx.store.createProposal(proposal);
+
+      await ctx.store.recordEvent({
+        worldId: ctx.world.id,
+        tick: ctx.tick,
+        eventType: 'proposal_opened',
+        actorId: ctx.character.id,
+        data: { proposalId: proposal.id, title, targetGroupId: group.id },
+        tokenCost: 0,
+      });
+
+      return {
+        ok: true,
+        detail: `proposal_opened:${proposal.id}`,
+        sideEffects: { proposalId: proposal.id },
+      };
+    },
+  };
+}
+
+/**
+ * Cast a vote on a pending proposal in a group the caller belongs to.
+ * Recasting is allowed — politics is fluid — but each voter only ever
+ * has one active vote per proposal. `weight` comes from the group's
+ * procedure config (equal vs role-weighted); the tool does NOT accept
+ * a caller-supplied weight to prevent agents from self-declaring
+ * larger influence than their role confers.
+ */
+function coreVote(): AgentTool<{
+  proposal_id: string;
+  stance: VoteStance;
+  reasoning?: string;
+}> {
+  return {
+    name: 'vote',
+    description:
+      'Vote on a pending proposal in a group you belong to. Stance: "for" / "against" / "abstain". Attach a short reasoning so your position is on the record. Re-voting overrides your previous stance.',
+    parametersSchema: z.object({
+      proposal_id: z.string().min(1),
+      stance: z.enum(['for', 'against', 'abstain']),
+      reasoning: z.string().max(1000).optional(),
+    }),
+    execute: async ({ proposal_id, stance, reasoning }, ctx) => {
+      const prop = await ctx.store.getProposal(proposal_id);
+      if (!prop || prop.worldId !== ctx.world.id) {
+        return { ok: false, detail: `no_proposal:${proposal_id}` };
+      }
+      if (prop.status !== 'pending') {
+        return { ok: false, detail: `proposal_${prop.status}` };
+      }
+      if (!(await ctx.store.isMember(prop.targetGroupId, ctx.character.id))) {
+        return { ok: false, detail: 'not_eligible' };
+      }
+
+      // Role-weight: pick up the voter's weight from a role they hold
+      // in the target group, if any. Default 1.0 otherwise. (Group-level
+      // `weights: "equal"` implicitly defaults here too — equal = 1.0 for
+      // everyone.)
+      const roles = await ctx.store.getRolesForGroup(prop.targetGroupId);
+      const voterRole = roles.find((r) => r.holderAgentId === ctx.character.id);
+      const weight = voterRole?.votingWeight ?? 1.0;
+
+      await ctx.store.castVote({
+        proposalId: prop.id,
+        voterAgentId: ctx.character.id,
+        stance,
+        weight,
+        castTick: ctx.tick,
+        reasoning: reasoning ?? null,
+      });
+
+      await ctx.store.recordEvent({
+        worldId: ctx.world.id,
+        tick: ctx.tick,
+        eventType: 'vote_cast',
+        actorId: ctx.character.id,
+        data: { proposalId: prop.id, stance, weight },
+        tokenCost: 0,
+      });
+
+      return { ok: true, detail: `voted:${stance}:weight=${weight}` };
+    },
+  };
+}
+
+/**
+ * The sponsor may withdraw their own pending proposal. Nobody else
+ * can withdraw it — that would be a censorship move, and if a group
+ * wants to kill a proposal from outside it should use the regular
+ * vote mechanism.
+ */
+function coreWithdrawProposal(): AgentTool<{ proposal_id: string }> {
+  return {
+    name: 'withdraw_proposal',
+    description:
+      'Withdraw a pending proposal you sponsored. Only the sponsor can do this; already-decided proposals cannot be withdrawn.',
+    parametersSchema: z.object({
+      proposal_id: z.string().min(1),
+    }),
+    execute: async ({ proposal_id }, ctx) => {
+      const prop = await ctx.store.getProposal(proposal_id);
+      if (!prop || prop.worldId !== ctx.world.id) {
+        return { ok: false, detail: `no_proposal:${proposal_id}` };
+      }
+      if (prop.sponsorAgentId !== ctx.character.id) {
+        return { ok: false, detail: 'not_sponsor' };
+      }
+      if (prop.status !== 'pending') {
+        return { ok: false, detail: `proposal_${prop.status}` };
+      }
+      await ctx.store.updateProposalStatus(prop.id, 'withdrawn', ctx.tick, 'sponsor_withdrew');
+      await ctx.store.recordEvent({
+        worldId: ctx.world.id,
+        tick: ctx.tick,
+        eventType: 'proposal_withdrawn',
+        actorId: ctx.character.id,
+        data: { proposalId: prop.id, title: prop.title },
+        tokenCost: 0,
+      });
+      return { ok: true, detail: `withdrawn:${prop.id}` };
+    },
+  };
+}
+
+/**
+ * Defaults that match the hermes "fewest footguns" principle: unless
+ * the caller specifies otherwise, a group's procedure should be safe
+ * and obvious.
+ */
+function defaultProcedureConfig(
+  kind: 'decree' | 'vote' | 'consensus' | 'lottery' | 'delegated',
+): Record<string, unknown> {
+  switch (kind) {
+    case 'decree':
+      return { holderRole: 'chair' };
+    case 'vote':
+      return { threshold: 0.5, quorum: 0.5, weights: 'equal' };
+    case 'consensus':
+      return { vetoCount: 1 };
+    case 'lottery':
+      return { eligible: 'members' };
+    case 'delegated':
+      // caller MUST supply { toGroupId } in procedure_config; we can't
+      // pick a default that makes sense (there's no obvious group to
+      // defer to). Leave it empty and let Layer-2 validation catch it.
+      return {};
+  }
 }
 
 async function resolveAgentByName(ctx: ExecutionContext, name: string): Promise<string | null> {

@@ -6,13 +6,22 @@
 
 import type {
   Agent as CharacterState,
+  ClassifiedError,
   Observation,
   ProposedAction,
+  RetryOptions,
   TurnResult,
   World,
 } from '@chronicle/core';
+import { retryWithBackoff } from '@chronicle/core';
 
-import type { AgentRuntimeAdapter, EventBus, RuleEnforcer, WorldStore } from '@chronicle/engine';
+import {
+  type AgentRuntimeAdapter,
+  type EventBus,
+  MemoryFileStore,
+  type RuleEnforcer,
+  type WorldStore,
+} from '@chronicle/engine';
 import { type AnyAgentTool, type ExecutionContext, compileWorldTools } from './tools/compiler.js';
 
 // Lazy-load pi-agent so the runtime package is loadable without it (useful for tests).
@@ -39,8 +48,21 @@ export interface AgentPoolOpts {
   store: WorldStore;
   ruleEnforcer: RuleEnforcer;
   events: EventBus;
+  /**
+   * File-backed memory store. Optional — if omitted we build one with
+   * defaults (rooted at `CHRONICLE_HOME`). Tests pass a tmp-rooted
+   * instance so they don't touch the real user directory.
+   */
+  memory?: MemoryFileStore;
   /** Inject a stub pi-module in tests; defaults to the real loader. */
   piLoader?: () => Promise<PiModule>;
+  /**
+   * Override retry behavior for `takeTurn`. Tests usually set
+   * `baseDelayMs: 1` + `sleep: async () => {}` to avoid wall-clock
+   * waits. Production leaves this undefined and accepts the
+   * resilience module's defaults (ADR-0013).
+   */
+  retryOptions?: Partial<RetryOptions>;
 }
 
 export class AgentPool implements AgentRuntimeAdapter {
@@ -49,17 +71,27 @@ export class AgentPool implements AgentRuntimeAdapter {
   private world!: World;
   private piModule?: Awaited<ReturnType<typeof loadPi>>;
   private actionSchemas: Awaited<ReturnType<WorldStore['getActiveActionSchemas']>> = [];
+  private readonly memory: MemoryFileStore;
 
-  constructor(private opts: AgentPoolOpts) {}
+  constructor(private opts: AgentPoolOpts) {
+    this.memory = opts.memory ?? new MemoryFileStore();
+  }
 
   async hydrate(world: World, agents: CharacterState[]): Promise<void> {
     this.world = world;
     this.piModule = await (this.opts.piLoader ?? loadPi)();
     this.actionSchemas = await this.opts.store.getActiveActionSchemas(world.id);
 
-    for (const character of agents) {
+    // Session-start snapshots are baked into each character's system
+    // prompt, so we read them up-front in parallel.
+    const snapshots = await Promise.all(
+      agents.map((a) => this.memory.snapshotForPrompt(world.id, a.id)),
+    );
+
+    for (let i = 0; i < agents.length; i++) {
+      const character = agents[i]!;
       this.characters.set(character.id, character);
-      this.instances.set(character.id, this.createInstance(character));
+      this.instances.set(character.id, this.createInstance(character, snapshots[i] ?? null));
     }
   }
 
@@ -87,16 +119,30 @@ export class AgentPool implements AgentRuntimeAdapter {
     const prompt = buildTurnPrompt(observation, tick, character);
     const tokensBefore = character.tokensSpent;
 
-    // pi-agent's prompt() drives the full tool loop
+    // pi-agent's prompt() drives the full tool loop. We wrap it in
+    // retryWithBackoff (ADR-0013) so transient failures — 429s,
+    // overloaded providers, timeouts, network glitches — don't silently
+    // gap out a character's turn. Non-retryable errors (auth, billing,
+    // format) short-circuit on attempt 1. All-fail path preserves the
+    // old TurnResult shape with a richer classified error string.
     try {
-      await instance.prompt(prompt);
+      await retryWithBackoff(() => instance.prompt(prompt), {
+        onRetry: (attempt, err, delayMs) => {
+          console.warn(
+            `[AgentPool] ${character.name} turn failed (${err.kind}): ${err.message}. ` +
+              `retry ${attempt} in ${Math.round(delayMs)}ms`,
+          );
+        },
+        ...this.opts.retryOptions,
+      });
     } catch (err) {
+      const classified = err as ClassifiedError;
       return {
         agentId: character.id,
         action: null,
         historyBlob: null,
         tokensSpent: character.tokensSpent,
-        error: String(err),
+        error: `${classified.kind ?? 'unknown'}:${classified.message ?? String(err)}`,
       };
     }
 
@@ -167,11 +213,11 @@ export class AgentPool implements AgentRuntimeAdapter {
     this.characters.clear();
   }
 
-  private createInstance(character: CharacterState): PiAgent {
+  private createInstance(character: CharacterState, memorySnapshot: string | null): PiAgent {
     if (!this.piModule) throw new Error('pi module not loaded');
     const { Agent, getModel } = this.piModule;
 
-    const systemPrompt = buildSystemPrompt(character, this.world);
+    const systemPrompt = buildSystemPrompt(character, this.world, memorySnapshot);
     const tools = this.wrapToolsForPi(
       compileWorldTools(this.world, character, this.opts.store, this.actionSchemas),
       character,
@@ -249,6 +295,7 @@ export class AgentPool implements AgentRuntimeAdapter {
           character: fresh,
           tick: this.world.currentTick + 1, // in-progress tick
           store: this.opts.store,
+          memory: this.memory,
         };
         return tool.execute(args as any, ctx);
       },
@@ -260,14 +307,27 @@ export class AgentPool implements AgentRuntimeAdapter {
 // Helpers
 // ============================================================
 
-function buildSystemPrompt(character: CharacterState, world: World): string {
+function buildSystemPrompt(
+  character: CharacterState,
+  world: World,
+  memorySnapshot: string | null,
+): string {
   const privateBlock = character.privateState
     ? `\n\nWhat you know that others don't:\n${JSON.stringify(character.privateState, null, 2)}`
     : '';
 
+  // Memory snapshot is a frozen point-in-time view from session start.
+  // Mid-session memory_add / memory_replace / memory_remove calls update
+  // the file on disk but DON'T re-inject here — that preserves the
+  // prefix cache across the whole session. The next session picks up
+  // the new state. This is the hermes-agent pattern.
+  const memoryBlock = memorySnapshot
+    ? `\n\nWhat you remember (durable across all moments of your life):\n${memorySnapshot}`
+    : '';
+
   return `You are ${character.name}, a character in an unfolding scenario.
 
-${character.persona}${privateBlock}
+${character.persona}${privateBlock}${memoryBlock}
 
 The world you inhabit:
 ${world.systemPrompt}
@@ -276,7 +336,12 @@ You experience this world one moment at a time. Each turn you will be given an o
 Respond by calling exactly ONE action tool.
 
 Stay deeply in character. Your decisions have real consequences in this world.
-Don't narrate from a bird's-eye view — act as this specific person.`.trim();
+Don't narrate from a bird's-eye view — act as this specific person.
+
+Your memory above is a living file. Use memory_add to commit a new lasting
+belief, memory_replace to update one as your understanding evolves, and
+memory_remove when something no longer serves you. Whatever is in the file
+at the start of each moment will shape how you see the world then.`.trim();
 }
 
 function buildTurnPrompt(
@@ -288,10 +353,6 @@ function buildTurnPrompt(
     ? observation.recentEvents.map((e) => `  [tick ${e.tick}] ${e.description}`).join('\n')
     : '  (nothing notable has happened recently)';
 
-  const memoriesText = observation.relevantMemories.length
-    ? observation.relevantMemories.map((m) => `  - ${m.content}`).join('\n')
-    : '  (no strong memories surface)';
-
   const nearbyText = observation.nearby.agents.length
     ? observation.nearby.agents.map((a) => `${a.name}${a.mood ? ` (${a.mood})` : ''}`).join(', ')
     : 'no one';
@@ -300,6 +361,9 @@ function buildTurnPrompt(
     ? observation.nearby.resources.map((r) => `${r.type}×${r.quantity.toFixed(0)}`).join(', ')
     : 'nothing notable';
 
+  // Note: durable memories are NOT rendered here — they already live in
+  // the system prompt as a frozen snapshot, so re-including them would
+  // waste tokens and break the prefix cache.
   return `=== Tick ${tick} ===
 
 You are in: ${observation.selfState.location ?? '(unplaced)'}
@@ -311,9 +375,6 @@ Resources here: ${resourcesText}
 
 Recent events:
 ${eventsText}
-
-What you remember:
-${memoriesText}
 
 Take exactly ONE action. Call a tool.`.trim();
 }

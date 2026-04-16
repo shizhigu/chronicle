@@ -56,6 +56,14 @@ export interface ApiKeyCredential {
   type: 'api-key';
   key: string;
   updatedAt: string;
+  /**
+   * Additional same-provider keys to pool with the primary (ADR-0014).
+   * Optional + backward-compatible — old files without this field load
+   * as "single-key" and behave exactly as before. Each extra key may
+   * carry a human-readable `label` for diagnostics (e.g. "work",
+   * "personal"); omitted labels default to positional ids.
+   */
+  additionalKeys?: Array<{ key: string; label?: string }>;
 }
 
 /**
@@ -183,8 +191,19 @@ export function listStoredProviders(): string[] {
 // Convenience constructors
 // ============================================================
 
-export function apiKey(key: string): ApiKeyCredential {
-  return { type: 'api-key', key, updatedAt: new Date().toISOString() };
+export function apiKey(
+  key: string,
+  additionalKeys?: Array<{ key: string; label?: string }>,
+): ApiKeyCredential {
+  const cred: ApiKeyCredential = {
+    type: 'api-key',
+    key,
+    updatedAt: new Date().toISOString(),
+  };
+  if (additionalKeys && additionalKeys.length > 0) {
+    cred.additionalKeys = additionalKeys;
+  }
+  return cred;
 }
 
 export function oauth(cred: Omit<OAuthCredential, 'type' | 'updatedAt'>): OAuthCredential {
@@ -230,7 +249,28 @@ function normaliseCredential(value: unknown): AuthCredential | null {
   const updatedAt = typeof v.updatedAt === 'string' ? v.updatedAt : new Date(0).toISOString();
 
   if (type === 'api-key' && typeof v.key === 'string' && v.key.length > 0) {
-    return { type: 'api-key', key: v.key, updatedAt };
+    const out: ApiKeyCredential = { type: 'api-key', key: v.key, updatedAt };
+    // Validate + normalise the additionalKeys list if present. Drop
+    // entries that don't look like key objects rather than failing the
+    // whole load — same philosophy as normaliseStore.
+    if (Array.isArray(v.additionalKeys)) {
+      const extras: Array<{ key: string; label?: string }> = [];
+      for (const entry of v.additionalKeys) {
+        if (
+          entry &&
+          typeof entry === 'object' &&
+          typeof (entry as { key?: unknown }).key === 'string' &&
+          (entry as { key: string }).key.length > 0
+        ) {
+          const e = entry as { key: string; label?: unknown };
+          const item: { key: string; label?: string } = { key: e.key };
+          if (typeof e.label === 'string') item.label = e.label;
+          extras.push(item);
+        }
+      }
+      if (extras.length > 0) out.additionalKeys = extras;
+    }
+    return out;
   }
   if (
     type === 'oauth' &&

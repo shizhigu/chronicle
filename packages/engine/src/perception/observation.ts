@@ -44,7 +44,6 @@ export class ObservationBuilder {
         locations: locationInfo?.adjacent ?? [],
       },
       recentEvents: recent,
-      relevantMemories: [], // populated downstream by MemoryService
       currentGoals: [], // TODO: derive from agent.privateState or reflections
     };
   }

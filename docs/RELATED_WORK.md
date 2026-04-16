@@ -12,9 +12,9 @@ This is a landscape map for contributors. If you are evaluating Chronicle agains
 - Repo: (research prototype; forks on GitHub)
 - What it demonstrated: memory retrieval (recency × importance × relevance), periodic reflection, hierarchical planning — produce "believable" human-like social behavior at small scale (25 agents in a town).
 
-**What we borrow from it.** The memory / reflection / planning triad is basically our `MemoryService` / `ReflectionService` / per-tick planning loop. The importance-weighted retrieval is how our `MemoryService.retrieveRelevant` ranks candidates.
+**What we borrow from it.** The reflection / planning loop is basically our `ReflectionService` / per-tick planning loop. Reflections become new entries in the character's memory file on the next session start.
 
-**Where we diverge.** Smallville's rules are implicit in prompts; ours compile to a typed DSL (see [ADR-0005](adr/0005-three-tier-rules.md)). Smallville is a specific demo; Chronicle is a framework.
+**Where we diverge.** Smallville's rules are implicit in prompts; ours compile to a typed DSL (see [ADR-0005](adr/0005-three-tier-rules.md)). And we skip Smallville's embedding-based memory retrieval entirely: memory lives in a plain markdown file per character, curated by the agent via `memory_add`/`memory_replace`/`memory_remove`, and injected as a frozen snapshot in the system prompt at session start (hermes-agent pattern). No embeddings, no vector search — the agent's own compression of what matters is the authority. Smallville is a specific demo; Chronicle is a framework.
 
 ### B. AI Town (a16z starter kit)
 

@@ -5,9 +5,26 @@
  *   - hard: SQL-style predicates, auto-reject or auto-correct
  *   - soft: norms in agent prompts + LLM judge for violation detection
  *   - economic: deduct costs on action execution
+ *
+ * Authority overrides (ADR-0009 Layer 1):
+ *   Before rejecting for a hard rule violation, we check whether the
+ *   actor holds an `override_rule` authority targeting that rule. If
+ *   so, the violation is permitted. Authority can reach the actor via
+ *   three paths — direct (agent holder), role (they currently fill a
+ *   role with the authority), or group (they're an active member of a
+ *   group that holds it). All three resolve through the `authorities`
+ *   table + `group_memberships` + `group_roles`.
  */
 
-import type { Agent, ProposedAction, Rule, ValidationResult, World } from '@chronicle/core';
+import type {
+  Agent,
+  Authority,
+  AuthorityPower,
+  ProposedAction,
+  Rule,
+  ValidationResult,
+  World,
+} from '@chronicle/core';
 
 import type { WorldStore } from '../store.js';
 import { evaluatePredicateSafe } from './predicate.js';
@@ -19,6 +36,7 @@ export interface ValidateArgs {
 
 export class RuleEnforcer {
   private rulesCache: Rule[] | null = null;
+  private authoritiesCache: Authority[] | null = null;
 
   constructor(
     private store: WorldStore,
@@ -29,12 +47,45 @@ export class RuleEnforcer {
     const { character, action } = args;
     const rules = await this.getActiveRules();
 
+    const memberGroupIds = await this.memberGroupIds(character.id);
+    this.memberGroupIdsForCurrentActor = memberGroupIds;
+
+    const actorAuthorities = await this.resolveAuthoritiesForActor(character, memberGroupIds);
+    const overrideIds = collectOverrideRuleIds(actorAuthorities);
+
+    try {
+      return await this.runValidation(rules, character, action, overrideIds);
+    } finally {
+      this.memberGroupIdsForCurrentActor = null;
+    }
+  }
+
+  /**
+   * Return the set of groupIds `actorId` currently belongs to.
+   * Centralized so `validate()` and `judgeSoftRules()` both feed the
+   * same value into scope checks + authority resolution without
+   * round-tripping the DB twice.
+   */
+  private async memberGroupIds(actorId: string): Promise<Set<string>> {
+    const memberships = await this.store.getActiveMembershipsForAgent(actorId);
+    return new Set(memberships.map((m) => m.groupId));
+  }
+
+  private async runValidation(
+    rules: Rule[],
+    character: Agent,
+    action: ProposedAction,
+    overrideIds: Set<string>,
+  ): Promise<ValidationResult> {
     // Evaluate all HARD rules first (blockers)
     for (const rule of rules.filter((r) => r.tier === 'hard')) {
       if (!this.isRuleInScope(rule, character, this.world)) continue;
 
       const result = await this.evaluateHardRule(rule, character, action);
       if (!result.ok) {
+        // Authority override: the actor holds a power that waives this
+        // specific rule.
+        if (overrideIds.has(rule.id)) continue;
         return result;
       }
     }
@@ -72,7 +123,10 @@ export class RuleEnforcer {
 
   /**
    * Post-action soft-rule evaluation. Returns violations that should
-   * trigger reputation/relationship effects.
+   * trigger reputation/relationship effects. Mirrors validate()'s
+   * preamble — authority overrides waive soft rules too (an emperor
+   * is still an emperor post-speech), and group-scoped soft rules
+   * must only bind members of that group.
    */
   async judgeSoftRules(
     character: Agent,
@@ -83,15 +137,24 @@ export class RuleEnforcer {
     const softRules = rules.filter((r) => r.tier === 'soft');
     const violations: { violatedRuleId: string; severity: number }[] = [];
 
-    for (const rule of softRules) {
-      if (!this.isRuleInScope(rule, character, this.world)) continue;
-      if (!rule.softDetectionPrompt) continue;
+    const memberGroupIds = await this.memberGroupIds(character.id);
+    this.memberGroupIdsForCurrentActor = memberGroupIds;
+    try {
+      const actorAuthorities = await this.resolveAuthoritiesForActor(character, memberGroupIds);
+      const overrideIds = collectOverrideRuleIds(actorAuthorities);
 
-      // Use a cheap LLM judge to evaluate
-      const judgment = await this.runJudge(rule, character, action);
-      if (judgment.violated) {
-        violations.push({ violatedRuleId: rule.id, severity: judgment.severity });
+      for (const rule of softRules) {
+        if (!this.isRuleInScope(rule, character, this.world)) continue;
+        if (overrideIds.has(rule.id)) continue;
+        if (!rule.softDetectionPrompt) continue;
+
+        const judgment = await this.runJudge(rule, character, action);
+        if (judgment.violated) {
+          violations.push({ violatedRuleId: rule.id, severity: judgment.severity });
+        }
       }
+    } finally {
+      this.memberGroupIdsForCurrentActor = null;
     }
 
     return violations;
@@ -104,11 +167,85 @@ export class RuleEnforcer {
     return this.rulesCache;
   }
 
+  private async getActiveAuthorities(): Promise<Authority[]> {
+    if (!this.authoritiesCache) {
+      this.authoritiesCache = await this.store.getActiveAuthoritiesForWorld(
+        this.world.id,
+        this.world.currentTick + 1,
+      );
+    }
+    return this.authoritiesCache;
+  }
+
   invalidateCache(): void {
     this.rulesCache = null;
+    this.authoritiesCache = null;
+  }
+
+  /**
+   * Return every authority that currently reaches `actor`, via any of:
+   *   - direct (holderKind='agent', holderRef=actor.id)
+   *   - role   (holderKind='role', holderRef='groupId#roleName' where
+   *             actor currently fills that role)
+   *   - group  (holderKind='group', holderRef=groupId where actor is
+   *             an active member of that group)
+   *
+   * The union is the actor's effective power set for this action.
+   * Computed per validate() call — authorities change infrequently so
+   * a within-call scan is cheap; cross-call caching happens via
+   * `authoritiesCache`.
+   */
+  private async resolveAuthoritiesForActor(
+    actor: Agent,
+    memberGroupIds: Set<string>,
+  ): Promise<Authority[]> {
+    const all = await this.getActiveAuthorities();
+    if (all.length === 0) return [];
+
+    // Build the set of "groupId#roleName" the actor currently holds.
+    // We query per group the actor is in, which bounds the work by
+    // membership count.
+    const roleRefs = new Set<string>();
+    for (const gid of memberGroupIds) {
+      const roles = await this.store.getRolesForGroup(gid);
+      for (const role of roles) {
+        if (role.holderAgentId === actor.id) {
+          roleRefs.add(`${gid}#${role.roleName}`);
+        }
+      }
+    }
+
+    return all.filter((a) => {
+      if (a.holderKind === 'agent') return a.holderRef === actor.id;
+      if (a.holderKind === 'group') return memberGroupIds.has(a.holderRef);
+      if (a.holderKind === 'role') return roleRefs.has(a.holderRef);
+      return false;
+    });
   }
 
   private isRuleInScope(rule: Rule, character: Agent, world: World): boolean {
+    // Primary scope (ADR-0009). A rule scoped to a specific group binds
+    // only when the actor is a member of that group; same idea for
+    // agent / location. World-scoped rules (default when unset) bind
+    // everywhere.
+    const scopeKind = rule.scopeKind ?? 'world';
+    if (scopeKind === 'agent' && rule.scopeRef !== character.id) {
+      return false;
+    }
+    if (scopeKind === 'location') {
+      if (!character.locationId || rule.scopeRef !== character.locationId) return false;
+    }
+    if (scopeKind === 'group' && rule.scopeRef) {
+      // We can't synchronously check group membership here; the fast
+      // path is `memberGroupIdsCache` populated by the validate() pass.
+      // If we haven't pre-resolved, fall through to "in scope" and let
+      // the authority check still run — worst case we evaluate a rule
+      // that wouldn't have bound and either pass or override.
+      const cached = this.memberGroupIdsForCurrentActor;
+      if (cached && !cached.has(rule.scopeRef)) return false;
+    }
+
+    // Legacy fine-grained filter on top
     if (!rule.scope) return true;
 
     if (rule.scope.agentIds && !rule.scope.agentIds.includes(character.id)) {
@@ -125,6 +262,12 @@ export class RuleEnforcer {
     }
     return true;
   }
+
+  /**
+   * Transient — set during validate() so the scope check can
+   * synchronously narrow by group membership without re-querying.
+   */
+  private memberGroupIdsForCurrentActor: Set<string> | null = null;
 
   private async evaluateHardRule(
     rule: Rule,
@@ -190,6 +333,30 @@ function mergeCosts(a: ValidationResult['cost'], b: ValidationResult['cost']) {
     tokens: (a?.tokens ?? 0) + (b?.tokens ?? 0) || undefined,
     health: (a?.health ?? 0) + (b?.health ?? 0) || undefined,
   };
+}
+
+/**
+ * Flatten a set of authorities into the ruleIds they can override.
+ * A wildcard `override_rule:'*'` power (not yet modeled, could be in
+ * the future) would be handled here by returning a "covers all" marker;
+ * for now we only recognise per-rule overrides.
+ */
+function collectOverrideRuleIds(authorities: Authority[]): Set<string> {
+  const ids = new Set<string>();
+  for (const auth of authorities) {
+    for (const power of auth.powers) {
+      if (isOverrideRulePower(power)) {
+        ids.add(power.ruleId);
+      }
+    }
+  }
+  return ids;
+}
+
+function isOverrideRulePower(
+  p: AuthorityPower,
+): p is Extract<AuthorityPower, { kind: 'override_rule' }> {
+  return p.kind === 'override_rule';
 }
 
 function evaluateHardPredicate(

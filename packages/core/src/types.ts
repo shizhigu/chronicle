@@ -36,6 +36,24 @@ export interface WorldConfig {
   defaultProvider: string;
   reflectionFrequency: number; // every N ticks
   dramaCatalystEnabled: boolean;
+  /**
+   * Activation-filter knobs (ADR-0010). Optional — defaults applied
+   * by ActivationService when absent, so older worlds keep working.
+   */
+  activation?: ActivationConfig;
+}
+
+export interface ActivationConfig {
+  /**
+   * Max ticks an agent may stay silent before the engine forces a
+   * turn. Default 5. `Infinity` = reactive-only (never force).
+   */
+  idleTimeout: number;
+  /**
+   * How far back the filter scans for witnessed events. Default 2.
+   * Keep small — larger windows inflate per-tick DB work.
+   */
+  lookbackTicks: number;
 }
 
 export type MapLayout =
@@ -74,6 +92,16 @@ export interface Agent {
   deathTick: number | null;
   parentIds: string[] | null;
   createdAt: string;
+  /**
+   * Tick on which this agent most recently took a turn (action, pass,
+   * or any other tool call). `null` before the first turn. Used by
+   * ActivationService to enforce the idle timeout signal.
+   *
+   * Declared optional for backwards compatibility — fixtures and older
+   * DB rows may not carry it. Treat missing / undefined as "never
+   * acted" (same as `null`).
+   */
+  lastActiveTick?: number | null;
 }
 
 // ============================================================
@@ -133,6 +161,20 @@ export interface Rule {
   // Meta
   active: boolean;
   priority: number;
+  /**
+   * Primary scope — which entity category owns this rule. A
+   * `scopeKind='group'` rule only binds actions taken by members of
+   * `scopeRef` (a groupId). `scopeKind='world'` (default) means
+   * worldwide. See ADR-0009 § Authority primitives.
+   *
+   * Declared optional for backwards compatibility with rules authored
+   * before the governance layer. Missing / undefined is treated as
+   * `'world'` by both the store and the enforcer.
+   */
+  scopeKind?: RuleScopeKind;
+  /** `null` when scopeKind='world'; otherwise id of the owning entity. */
+  scopeRef?: string | null;
+  /** Fine-grained filter on top of the primary scope. Legacy; still useful. */
   scope?: RuleScope;
   createdAt: string;
   createdByTick: number | null;
@@ -184,7 +226,16 @@ export type EventType =
   | 'rule_violation'
   | 'death'
   | 'birth'
-  | 'catalyst';
+  | 'catalyst'
+  // governance (ADR-0009 Layer 2)
+  | 'proposal_opened'
+  | 'proposal_adopted'
+  | 'proposal_rejected'
+  | 'proposal_expired'
+  | 'proposal_withdrawn'
+  | 'vote_cast'
+  // activation (ADR-0010)
+  | 'agent_dormant';
 
 export interface Event {
   id: number;
@@ -215,26 +266,6 @@ export interface Message {
   tone: string | null;
   private: boolean;
   heardBy: string[];
-}
-
-// ============================================================
-// MEMORY
-// ============================================================
-
-export type MemoryType = 'observation' | 'reflection' | 'goal' | 'belief_about_other' | 'thought';
-
-export interface AgentMemory {
-  id: number;
-  agentId: string;
-  createdTick: number;
-  memoryType: MemoryType;
-  content: string;
-  importance: number;
-  decay: number;
-  relatedEventId: number | null;
-  aboutAgentId: string | null;
-  embedding: Uint8Array | null;
-  lastAccessedTick: number | null;
 }
 
 // ============================================================
@@ -289,6 +320,302 @@ export interface GodIntervention {
 }
 
 // ============================================================
+// GOVERNANCE — groups, authorities, and decision procedures
+//
+// See docs/adr/0009-governance-primitives.md for the full rationale.
+// The short version: every political archetype (parliament, tyranny,
+// anarchy, feudalism, ...) decomposes into some configuration of
+// Group + Authority + Procedure + (in Layer 2) Proposal + Effect.
+// The engine knows nothing about "tyranny"; it knows about the
+// primitives.
+// ============================================================
+
+/** How a group makes decisions. See ADR-0009 § Procedure primitives. */
+export type ProcedureKind = 'decree' | 'vote' | 'consensus' | 'lottery' | 'delegated';
+
+/**
+ * Succession rule when a role becomes vacant. `null` means the role
+ * simply stays vacant until something else fills it (e.g. a proposal).
+ */
+export type SuccessionKind = 'vote' | 'inheritance' | 'appointment' | 'combat' | 'lottery' | null;
+
+/**
+ * How outsiders perceive the group's internal deliberation.
+ * - `open`    — non-members see opened, votes, and outcome events
+ * - `closed`  — non-members see opened + outcome only; votes hidden
+ * - `opaque`  — non-members do not even know the group exists
+ */
+export type VisibilityPolicy = 'open' | 'closed' | 'opaque';
+
+export interface Group {
+  id: string;
+  worldId: string;
+  name: string;
+  description: string;
+  procedureKind: ProcedureKind;
+  /**
+   * Procedure-specific parameters. Shape depends on `procedureKind`:
+   * - decree: `{ holderRole: string }`
+   * - vote: `{ threshold: number; quorum?: number; weights?: 'equal' | 'role' | 'authority' | 'custom' }`
+   * - consensus: `{ vetoCount?: number }` (default 1)
+   * - lottery: `{ eligible: 'members' | 'citizens' }`
+   * - delegated: `{ toGroupId: string }`
+   */
+  procedureConfig: Record<string, unknown>;
+  /**
+   * Optional predicate gating new members. Compiled expression in the
+   * same DSL as rules (see ADR-0008). `null` = open (anyone can join
+   * pending any authority-gated invitation logic).
+   */
+  joinPredicate: string | null;
+  successionKind: SuccessionKind;
+  visibilityPolicy: VisibilityPolicy;
+  foundedTick: number;
+  /** `null` while the group is still active. */
+  dissolvedTick: number | null;
+  createdAt: string;
+}
+
+export interface GroupMembership {
+  groupId: string;
+  agentId: string;
+  joinedTick: number;
+  /** `null` while still a member. Historical rows remain for audit. */
+  leftTick: number | null;
+}
+
+export interface GroupRole {
+  groupId: string;
+  roleName: string;
+  /** `null` when the seat is vacant. */
+  holderAgentId: string | null;
+  assignedTick: number | null;
+  /** Used when the group's vote procedure has `weights: 'role'`. */
+  votingWeight: number;
+  /** Optional extra scope this role carries beyond the group's base scope. */
+  scopeRef: string | null;
+}
+
+/**
+ * Who can hold an authority.
+ * - `group`: a whole group holds it (group members can invoke it
+ *   subject to the group's procedure)
+ * - `agent`: a specific character holds it personally
+ * - `role`: the holder is whichever agent currently sits in a named
+ *   role of a group (holderRef is `${groupId}#${roleName}`)
+ */
+export type AuthorityHolderKind = 'group' | 'agent' | 'role';
+
+/**
+ * Things an authority can do. Stored as JSON in `authorities.powers_json`.
+ * Extensible — new power kinds are added over time as the Effect catalog
+ * grows.
+ */
+export type AuthorityPower =
+  /** Can override a specific rule — actions violating it are let through. */
+  | { kind: 'override_rule'; ruleId: string }
+  /** Can sponsor proposals that carry these effect types. `['*']` = any. */
+  | { kind: 'propose'; effectTypes: string[] }
+  /** Can directly execute an effect without a proposal (for decree groups). */
+  | { kind: 'execute_effect'; effectType: string; scope?: string }
+  /** Can grant authorities down to others (bounded by maxScope). */
+  | { kind: 'grant_authority'; maxScope?: string }
+  /**
+   * Sentinel marker. An authority carrying this power cannot be
+   * revoked by any proposal or god intervention — the engine refuses
+   * `revoke_authority` on it. Used for L0 seeded authorities that
+   * protect runtime integrity. Stack with other powers freely.
+   */
+  | { kind: 'inviolable' };
+
+export interface Authority {
+  id: string;
+  worldId: string;
+  holderKind: AuthorityHolderKind;
+  /**
+   * - when holderKind='group': groupId
+   * - when holderKind='agent': agentId
+   * - when holderKind='role':  `${groupId}#${roleName}`
+   */
+  holderRef: string;
+  powers: AuthorityPower[];
+  grantedTick: number;
+  /** `null` = indefinite. Term limits / regencies set this. */
+  expiresTick: number | null;
+  /** Event id that produced this grant (for audit / replay). */
+  sourceEventId: number | null;
+  /** `null` while active; a tick value marks retraction. */
+  revokedTick: number | null;
+  revocationEventId: number | null;
+}
+
+/**
+ * A rule's scope controls whom it binds. World-wide is the legacy
+ * default. Group/agent/location scoped rules only evaluate when the
+ * actor is within that scope (see RuleEnforcer).
+ */
+export type RuleScopeKind = 'world' | 'group' | 'agent' | 'location';
+
+// ============================================================
+// PROPOSAL / VOTE / EFFECT  (ADR-0009 Layer 2)
+//
+// A Proposal is a pending state-change: sponsor + target group +
+// effect payload + deadline. The group's decision procedure (see
+// Group.procedureKind) decides adoption. Adopted proposals execute
+// their effects through the shared EffectRegistry — the same
+// registry GodService uses, so a god intervention is literally a
+// proposal that auto-adopts.
+// ============================================================
+
+export type ProposalStatus = 'pending' | 'adopted' | 'rejected' | 'withdrawn' | 'expired';
+
+export type VoteStance = 'for' | 'against' | 'abstain';
+
+/**
+ * When a proposal is settled. Polymorphic — a procedure may prefer a
+ * hard tick limit, a quorum trigger, or "close when every eligible
+ * member has voted."
+ */
+export type ProposalDeadline =
+  | { kind: 'tick'; at: number }
+  | { kind: 'quorum'; need: number }
+  | { kind: 'all_voted' }
+  | { kind: 'any_of'; options: ProposalDeadline[] };
+
+export interface Proposal {
+  id: string;
+  worldId: string;
+  sponsorAgentId: string;
+  targetGroupId: string;
+  title: string;
+  rationale: string;
+  /** Raw, pre-validation effects as authored by the sponsor. */
+  effects: Effect[];
+  /**
+   * Validator output — either the same array with extra metadata or
+   * `null` if validation hasn't run yet. EffectRegistry.validate fills
+   * this in when the proposal is created.
+   */
+  compiledEffects: Effect[] | null;
+  openedTick: number;
+  deadline: ProposalDeadline;
+  /** Procedure override if set; otherwise use targetGroup.procedureKind. */
+  procedureOverride: Record<string, unknown> | null;
+  status: ProposalStatus;
+  decidedTick: number | null;
+  outcomeDetail: string | null;
+}
+
+export interface Vote {
+  proposalId: string;
+  voterAgentId: string;
+  stance: VoteStance;
+  /** Procedure-specific; 1.0 for equal weighting. */
+  weight: number;
+  castTick: number;
+  /** Optional rationale the voter wants on the record. */
+  reasoning: string | null;
+}
+
+/**
+ * An Effect is a typed instruction that mutates world state. Each kind
+ * has a dedicated handler in EffectRegistry. Every effect is idempotent
+ * at the semantic level — running it twice with the same inputs should
+ * be a no-op or produce the same final state, to keep replay sane.
+ *
+ * The catalog below is the Layer-2 minimum viable set. Layer 3 will
+ * grow it (claim_location, declare_relation, etc.).
+ */
+export type Effect =
+  // --- entity lifecycle ---
+  | {
+      kind: 'create_location';
+      name: string;
+      description: string;
+      adjacentTo?: string[]; // location names that already exist
+      spriteHint?: string;
+    }
+  | {
+      kind: 'create_group';
+      name: string;
+      description: string;
+      procedure: ProcedureKind;
+      procedureConfig?: Record<string, unknown>;
+      visibility?: VisibilityPolicy;
+      initialMembers?: string[] /* agentIds */;
+    }
+  | { kind: 'dissolve_group'; groupId: string }
+  | {
+      kind: 'create_rule';
+      description: string;
+      tier: 'hard' | 'soft' | 'economic';
+      predicate?: string;
+      check?: string;
+      onViolation?: string;
+      softNormText?: string;
+      economicActionType?: string;
+      economicCostFormula?: string;
+      scopeKind?: RuleScopeKind;
+      scopeRef?: string | null;
+    }
+  | { kind: 'repeal_rule'; ruleId: string }
+  // --- membership & role ---
+  | { kind: 'add_member'; groupId: string; agentId: string }
+  | { kind: 'remove_member'; groupId: string; agentId: string }
+  | {
+      kind: 'assign_role';
+      groupId: string;
+      roleName: string;
+      agentId: string;
+      votingWeight?: number;
+      scopeRef?: string | null;
+    }
+  | { kind: 'vacate_role'; groupId: string; roleName: string }
+  // --- authority ---
+  | {
+      kind: 'grant_authority';
+      holderKind: AuthorityHolderKind;
+      holderRef: string;
+      powers: AuthorityPower[];
+      expiresTick?: number | null;
+    }
+  | { kind: 'revoke_authority'; authorityId: string }
+  // --- structural change ---
+  | {
+      kind: 'change_procedure';
+      groupId: string;
+      newProcedure: ProcedureKind;
+      newConfig?: Record<string, unknown>;
+    }
+  // --- resources ---
+  | {
+      kind: 'transfer_resource';
+      resourceId: string;
+      toOwnerKind: 'agent' | 'location';
+      toOwnerRef: string;
+      quantity: number;
+    }
+  // --- agent mutation (ADR-0011) ---
+  | {
+      kind: 'update_agent';
+      agentId: string;
+      /**
+       * Overwrite persona if present. Omit to keep. Persona is
+       * non-nullable on the Agent type, so this field has no
+       * "clear" semantic — pass a replacement string.
+       */
+      persona?: string;
+      /** `null` clears mood; omit to keep. */
+      mood?: string | null;
+      /** `null` clears privateState; omit to keep. */
+      privateState?: Record<string, unknown> | null;
+      /** Omit to keep. Partial merge is NOT supported — replaces entirely. */
+      traits?: Record<string, number | string | boolean>;
+    };
+
+export type EffectKind = Effect['kind'];
+
+// ============================================================
 // OBSERVATION (built per-agent per-tick)
 // ============================================================
 
@@ -308,7 +635,6 @@ export interface Observation {
     locations: { name: string; adjacent: boolean }[];
   };
   recentEvents: { tick: number; description: string }[];
-  relevantMemories: { content: string; importance: number; tick: number }[];
   currentGoals: string[];
 }
 

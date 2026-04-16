@@ -26,6 +26,9 @@ export const IdPrefix = {
   memory: 'mem',
   intervention: 'iv',
   fork: 'frk',
+  group: 'grp',
+  authority: 'auth',
+  proposal: 'prop',
 } as const;
 
 export function worldId(): string {
@@ -60,4 +63,13 @@ export function interventionId(): string {
 }
 export function forkId(): string {
   return generateId(IdPrefix.fork);
+}
+export function groupId(): string {
+  return generateId(IdPrefix.group);
+}
+export function authorityId(): string {
+  return generateId(IdPrefix.authority);
+}
+export function proposalId(): string {
+  return generateId(IdPrefix.proposal);
 }

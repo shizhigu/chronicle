@@ -152,9 +152,12 @@ For security issues: `security@chronicle.sh`. Everything else: [file an issue](h
 See [`docs/ROADMAP.md`](ROADMAP.md). Highlights for the next few milestones:
 
 - v0.2: real sprite art instead of colored circles; multi-location map layouts.
-- v0.3: embedding-based memory retrieval (currently keyword overlap).
 - v0.3: highlight-reel auto-generation (gazette tab → short video).
 - v1.0: API stability guarantee; fork semantics finalized.
+
+Memory is deliberately NOT on this list: we run a file-backed,
+agent-curated markdown memory per character (hermes-agent pattern) —
+no embeddings, no vector store, no retrieval scoring.
 
 ---
 

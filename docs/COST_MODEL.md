@@ -52,9 +52,10 @@ Take a concrete scenario: **10 agents × 100 ticks, Haiku default**.
 
 ### Memory embeddings
 
-- ~200 memories generated per run × embedding model
-- Using `text-embedding-3-small`: $0.02 / 1M tokens
-- 200 × 100 tokens = 20K tokens = **$0.0004**
+Not used. Character memory is file-backed (markdown per character),
+curated by the agent via `memory_add` / `memory_replace` / `memory_remove`
+and injected into the system prompt as a frozen snapshot per session.
+No embedding calls, no vector DB — $0.00.
 
 ### God interventions (if user intervenes 3×)
 
@@ -262,8 +263,11 @@ Video generation is compute-expensive locally. On-demand saves infra.
 ### ❌ We DON'T batch scenes in v1
 Cheaper but harder to implement correctly. Ship sparse-world version first.
 
-### ❌ We DON'T do vector memory retrieval in v1
-Embedding costs add up. Use recency + importance instead initially.
+### ❌ We DON'T use embeddings or vector retrieval at all
+Memory is a plain markdown file per character, curated by the agent
+itself (hermes-agent pattern). The file is injected into the system
+prompt at session start as a frozen snapshot — prefix cache friendly,
+inspectable by users, zero embedding spend.
 
 ---
 

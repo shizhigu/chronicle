@@ -1,16 +1,24 @@
 /**
- * ReflectionService — periodic per-agent LLM reflection, persisted as a
- * high-importance memory.
+ * ReflectionService — periodic per-agent LLM reflection, persisted as
+ * a new entry in the character's memory.md file.
+ *
+ * Reflections land in the same file-backed store the agent uses for
+ * its own `memory_add` calls, so the LLM-driven summary is treated as
+ * a first-class memory entry (injected into the next session's system
+ * prompt) rather than as opaque DB state.
  */
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { agentId, worldId } from '@chronicle/core';
 import type { Agent, World } from '@chronicle/core';
+import { MemoryFileStore } from '../src/memory/file-store.js';
 import { type ReflectionDeps, ReflectionService } from '../src/memory/reflection.js';
-import { MemoryService } from '../src/memory/service.js';
-import { WorldStore } from '../src/store.js';
 
-let store: WorldStore;
+let memory: MemoryFileStore;
+let tmpRoot: string;
 let world: World;
 let alice: Agent;
 let bob: Agent;
@@ -74,20 +82,19 @@ function makeAgent(wId: string, name: string): Agent {
 
 const TEST_REFLECTION_MODEL = { provider: 'test-provider', modelId: 'test-model-strong' };
 
-beforeEach(async () => {
-  store = await WorldStore.open(':memory:');
+beforeEach(() => {
+  tmpRoot = mkdtempSync(join(tmpdir(), 'chronicle-reflection-'));
+  memory = new MemoryFileStore({ root: tmpRoot });
   world = makeWorld();
-  await store.createWorld(world);
   alice = makeAgent(world.id, 'Alice');
   bob = makeAgent(world.id, 'Bob');
-  await store.createAgent(alice);
-  await store.createAgent(bob);
 });
-afterEach(() => store.close());
+afterEach(() => {
+  rmSync(tmpRoot, { recursive: true, force: true });
+});
 
 describe('ReflectionService', () => {
-  it('records a high-importance reflection memory per agent', async () => {
-    const memory = new MemoryService(store);
+  it("writes each agent's reflection into their own memory file", async () => {
     const reflectCalls: Array<{ prompt: string; override: unknown }> = [];
     const deps: ReflectionDeps = {
       getAgentInstance: (a) => ({
@@ -98,30 +105,25 @@ describe('ReflectionService', () => {
       }),
       reflectionModel: TEST_REFLECTION_MODEL,
     };
-    const svc = new ReflectionService(store, memory, deps);
+    const svc = new ReflectionService(world, memory, deps);
 
     await svc.triggerFor([alice, bob], 20);
 
     expect(reflectCalls.length).toBe(2);
-    // Each was invoked with whatever reflection model the deps specified
     for (const c of reflectCalls) {
       expect(c.override).toEqual(TEST_REFLECTION_MODEL);
     }
     expect(reflectCalls[0]?.prompt).toContain('REFLECTION');
 
-    const aliceMems = await store.getMemoriesForAgent(alice.id);
-    const bobMems = await store.getMemoriesForAgent(bob.id);
-    expect(aliceMems.length).toBe(1);
-    expect(bobMems.length).toBe(1);
-
-    expect(aliceMems[0]?.memoryType).toBe('reflection');
-    expect(aliceMems[0]?.importance).toBeGreaterThanOrEqual(0.8);
-    expect(aliceMems[0]?.content).toContain('Alice reflects');
-    expect(aliceMems[0]?.createdTick).toBe(20);
+    const aliceEntries = await memory.entries(world.id, alice.id);
+    const bobEntries = await memory.entries(world.id, bob.id);
+    expect(aliceEntries).toHaveLength(1);
+    expect(bobEntries).toHaveLength(1);
+    expect(aliceEntries[0]).toContain('Alice reflects');
+    expect(bobEntries[0]).toContain('Bob reflects');
   });
 
   it('skips agents whose instance is null (e.g., unhydrated)', async () => {
-    const memory = new MemoryService(store);
     const deps: ReflectionDeps = {
       getAgentInstance: (a) =>
         a.id === alice.id
@@ -131,18 +133,15 @@ describe('ReflectionService', () => {
             },
       reflectionModel: TEST_REFLECTION_MODEL,
     };
-    const svc = new ReflectionService(store, memory, deps);
+    const svc = new ReflectionService(world, memory, deps);
 
     await svc.triggerFor([alice, bob], 20);
 
-    const aliceMems = await store.getMemoriesForAgent(alice.id);
-    const bobMems = await store.getMemoriesForAgent(bob.id);
-    expect(aliceMems.length).toBe(0);
-    expect(bobMems.length).toBe(1);
+    expect(await memory.entryCount(world.id, alice.id)).toBe(0);
+    expect(await memory.entryCount(world.id, bob.id)).toBe(1);
   });
 
   it('isolates failures — one agent erroring does not block others', async () => {
-    const memory = new MemoryService(store);
     const originalError = console.error;
     console.error = mock(() => {});
 
@@ -155,20 +154,17 @@ describe('ReflectionService', () => {
       }),
       reflectionModel: TEST_REFLECTION_MODEL,
     };
-    const svc = new ReflectionService(store, memory, deps);
+    const svc = new ReflectionService(world, memory, deps);
 
     await svc.triggerFor([alice, bob], 20);
 
-    const aliceMems = await store.getMemoriesForAgent(alice.id);
-    const bobMems = await store.getMemoriesForAgent(bob.id);
-    expect(aliceMems.length).toBe(0);
-    expect(bobMems.length).toBe(1);
+    expect(await memory.entryCount(world.id, alice.id)).toBe(0);
+    expect(await memory.entryCount(world.id, bob.id)).toBe(1);
 
     console.error = originalError;
   });
 
-  it('reflections persist across multiple ticks — most-recent is retrievable', async () => {
-    const memory = new MemoryService(store);
+  it('multiple reflection passes accumulate entries in order', async () => {
     let callCount = 0;
     const deps: ReflectionDeps = {
       getAgentInstance: () => ({
@@ -176,17 +172,30 @@ describe('ReflectionService', () => {
       }),
       reflectionModel: TEST_REFLECTION_MODEL,
     };
-    const svc = new ReflectionService(store, memory, deps);
+    const svc = new ReflectionService(world, memory, deps);
 
     await svc.triggerFor([alice], 20);
     await svc.triggerFor([alice], 40);
     await svc.triggerFor([alice], 60);
 
-    const mems = await store.getMemoriesForAgent(alice.id);
-    expect(mems.length).toBe(3);
-    expect(mems.every((m) => m.memoryType === 'reflection')).toBe(true);
-    const latest = mems.sort((a, b) => b.createdTick - a.createdTick)[0];
-    expect(latest?.content).toContain('#3');
-    expect(latest?.createdTick).toBe(60);
+    const entries = await memory.entries(world.id, alice.id);
+    expect(entries).toHaveLength(3);
+    expect(entries[0]).toContain('#1');
+    expect(entries[1]).toContain('#2');
+    expect(entries[2]).toContain('#3');
+  });
+
+  it('ignores empty LLM outputs instead of polluting the file', async () => {
+    const deps: ReflectionDeps = {
+      getAgentInstance: () => ({
+        reflect: async () => '   \n  ',
+      }),
+      reflectionModel: TEST_REFLECTION_MODEL,
+    };
+    const svc = new ReflectionService(world, memory, deps);
+
+    await svc.triggerFor([alice], 20);
+
+    expect(await memory.entryCount(world.id, alice.id)).toBe(0);
   });
 });

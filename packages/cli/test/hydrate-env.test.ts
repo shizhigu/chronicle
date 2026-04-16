@@ -32,7 +32,9 @@ describe('hydrateEnvFromAuth', () => {
     const env: Record<string, string | undefined> = {};
     const result = hydrateEnvFromAuth(env);
     expect(env.ANTHROPIC_API_KEY).toBe('sk-ant-stored-xyz');
-    expect(result.injected).toEqual([{ provider: 'anthropic', envVar: 'ANTHROPIC_API_KEY' }]);
+    expect(result.injected).toEqual([
+      { provider: 'anthropic', envVar: 'ANTHROPIC_API_KEY', poolKeyId: 'primary' },
+    ]);
   });
 
   it('does NOT overwrite an env var the user already set — user override wins', () => {
@@ -89,5 +91,52 @@ describe('hydrateEnvFromAuth', () => {
     const env: Record<string, string | undefined> = {};
     expect(() => hydrateEnvFromAuth(env)).not.toThrow();
     expect(Object.keys(env)).toHaveLength(0);
+  });
+
+  it('multi-key credentials go through the pool — primary wins first pick (round_robin)', () => {
+    // Primary + two additional keys. Default strategy is round_robin
+    // on a fresh pool, so the first pickAvailable returns 'primary'.
+    saveAuth({
+      anthropic: apiKey('sk-ant-primary', [
+        { key: 'sk-ant-work', label: 'work' },
+        { key: 'sk-ant-personal', label: 'personal' },
+      ]),
+    });
+    const env: Record<string, string | undefined> = {};
+    const result = hydrateEnvFromAuth(env);
+
+    expect(result.injected).toHaveLength(1);
+    const picked = result.injected[0]!;
+    expect(picked.provider).toBe('anthropic');
+    expect(picked.envVar).toBe('ANTHROPIC_API_KEY');
+    expect(picked.poolKeyId).toBe('primary');
+    expect(env.ANTHROPIC_API_KEY).toBe('sk-ant-primary');
+  });
+
+  it('single-key stored credential still works without a label (backcompat)', () => {
+    // No additionalKeys supplied — poolKeyId falls back to 'primary'.
+    saveAuth({ anthropic: apiKey('sk-ant-only') });
+    const env: Record<string, string | undefined> = {};
+    hydrateEnvFromAuth(env);
+    expect(env.ANTHROPIC_API_KEY).toBe('sk-ant-only');
+  });
+
+  it('loads pre-0014 auth.json shape unchanged (no additionalKeys field)', async () => {
+    // Simulate a file written before this feature: hand-crafted JSON
+    // without the field. normaliseCredential should accept it.
+    const { writeFileSync } = await import('node:fs');
+    const rawShape = {
+      anthropic: {
+        type: 'api-key',
+        key: 'sk-ant-legacy',
+        updatedAt: new Date().toISOString(),
+      },
+    };
+    writeFileSync(paths.auth, JSON.stringify(rawShape), 'utf-8');
+
+    const env: Record<string, string | undefined> = {};
+    const result = hydrateEnvFromAuth(env);
+    expect(env.ANTHROPIC_API_KEY).toBe('sk-ant-legacy');
+    expect(result.injected[0]?.poolKeyId).toBe('primary');
   });
 });

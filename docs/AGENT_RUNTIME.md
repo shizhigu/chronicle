@@ -312,20 +312,17 @@ Handled by pi-agent automatically. Everything the character has seen/said/though
 Events filtered for importance become memory records:
 
 ```typescript
-interface AgentMemory {
-  id: number;
-  agentId: string;
-  createdTick: number;
-  memoryType: "observation" | "reflection" | "goal" | "belief_about_other";
-  content: string;
-  importance: number;    // 0–1
-  relatedEventId?: number;
-  aboutAgentId?: string;
-  embedding?: Buffer;    // optional semantic index
-}
-```
+Durable memory is a plain markdown file per character — `<CHRONICLE_HOME>/worlds/<worldId>/characters/<agentId>/memory.md` — with entries separated by the `§` section sign and a per-file char limit (default 4000). No DB table, no embeddings, no retrieval scoring.
 
-Retrieved per tick by `retrieveMemories(character, observation, k=10)` — recency × importance × similarity.
+The agent curates its own file through three tools:
+
+- `memory_add({ content })` — append a new entry
+- `memory_replace({ old_text, new_content })` — rewrite the unique entry containing `old_text`
+- `memory_remove({ old_text })` — delete the unique entry containing `old_text`
+
+There is intentionally no `memory_read` tool: the file content is injected into the system prompt as a frozen snapshot at session start, so reading is free and cacheable. Mid-session writes update the file on disk (durable) but do not touch the prompt — prefix cache survives the whole session; the next session refreshes the snapshot.
+
+All writes are scanned for prompt-injection / exfiltration payloads (patterns like "ignore previous instructions", invisible unicode, env-var exfil via curl). Memory lands in the system prompt, so sanitising it at ingestion is load-bearing.
 
 ### Layer 3: Reflections (LLM-synthesized)
 
@@ -341,7 +338,7 @@ REFLECTION TIME. Summarize the last 20 ticks:
 `);
 ```
 
-The LLM's reply is stored as a high-importance memory. This keeps long-term continuity without bloating context.
+The LLM's reply is written as a new entry in the character's memory file. It becomes part of the system-prompt snapshot on the next session start, shaping every future turn's prompt.
 
 ### Context compaction
 

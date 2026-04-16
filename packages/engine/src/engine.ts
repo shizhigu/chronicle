@@ -7,10 +7,12 @@
 
 import type { Agent, Observation, ProposedAction, TurnResult, World } from '@chronicle/core';
 
+import { ActivationService, type AgentActivation } from './activation/service.js';
 import { EventBus, type Subscriber } from './events/bus.js';
 import { GodService } from './god/service.js';
+import { ProposalService } from './governance/proposal-service.js';
+import { MemoryFileStore } from './memory/file-store.js';
 import { type ReflectionDeps, ReflectionService } from './memory/reflection.js';
-import { MemoryService } from './memory/service.js';
 import { CatalystInjector } from './narrative/catalyst.js';
 import { DramaDetector } from './narrative/drama.js';
 import { ObservationBuilder } from './perception/observation.js';
@@ -45,6 +47,18 @@ export interface EngineOptions {
    * No provider is privileged — pass whatever the user configured.
    */
   reflectionModel?: { provider: string; modelId: string };
+  /**
+   * Override the memory file store (useful for tests that want a tmp
+   * directory). Production callers can leave this out and accept the
+   * default CHRONICLE_HOME root.
+   */
+  memory?: MemoryFileStore;
+  /**
+   * Plug in a custom activation filter. Default is `ActivationService`
+   * (ADR-0010) — a deterministic 5-signal pre-filter. Tests can inject
+   * a stub that returns a fixed decision per agent.
+   */
+  activation?: AgentActivation;
 }
 
 export class Engine {
@@ -52,11 +66,13 @@ export class Engine {
   private ruleEnforcer!: RuleEnforcer;
   private events!: EventBus;
   private observations!: ObservationBuilder;
-  private memory!: MemoryService;
+  private memory!: MemoryFileStore;
   private reflection!: ReflectionService;
   private drama!: DramaDetector;
   private catalyst!: CatalystInjector;
   private god!: GodService;
+  private proposals!: ProposalService;
+  private activation!: AgentActivation;
   private runtime: AgentRuntimeAdapter;
 
   private world!: World;
@@ -76,10 +92,12 @@ export class Engine {
 
     this.ruleEnforcer = new RuleEnforcer(this.store, this.world);
     this.observations = new ObservationBuilder(this.store, this.world);
-    this.memory = new MemoryService(this.store);
+    this.memory = this.opts.memory ?? new MemoryFileStore();
     this.drama = new DramaDetector(this.store);
     this.catalyst = new CatalystInjector(this.store, this.world);
     this.god = new GodService(this.store);
+    this.proposals = new ProposalService(this.store, this.events);
+    this.activation = this.opts.activation ?? new ActivationService(this.store, this.world);
 
     const reflectionDeps: ReflectionDeps = {
       getAgentInstance: (agent: Agent) => ({
@@ -92,7 +110,7 @@ export class Engine {
         modelId: this.world.config.defaultModelId,
       },
     };
-    this.reflection = new ReflectionService(this.store, this.memory, reflectionDeps);
+    this.reflection = new ReflectionService(this.world, this.memory, reflectionDeps);
 
     const live = await this.store.getLiveAgents(this.world.id);
     await this.runtime.hydrate(this.world, live);
@@ -191,26 +209,49 @@ export class Engine {
 
     this.events.emit({ type: 'tick_begin', worldId: this.world.id, tick: nextTick });
 
-    // Build observations
+    // Build observations. Durable memory is no longer attached here —
+    // it lives in each character's memory.md file and is injected into
+    // the system prompt at session start (see AgentPool.hydrate).
     const liveAgents = await this.store.getLiveAgents(this.world.id);
     const observations = new Map<string, Observation>();
     for (const agent of liveAgents) {
       observations.set(agent.id, await this.observations.build(agent, nextTick));
     }
 
-    // Attach relevant memories
-    for (const agent of liveAgents) {
-      const memories = await this.memory.retrieveRelevant(agent, observations.get(agent.id)!, 10);
-      observations.get(agent.id)!.relevantMemories = memories.map((m) => ({
-        content: m.content,
-        importance: m.importance,
-        tick: m.createdTick,
-      }));
+    // Activation pre-filter (ADR-0010). Any agent the filter declines
+    // is skipped for this tick — no LLM call — and a cheap
+    // `agent_dormant` event records the skip for replay + dashboards.
+    //
+    // Snapshot semantics note: this runs BEFORE `proposals.settlePending`
+    // below. An agent whose group membership is granted by a proposal
+    // adopted this tick won't see the `pending_vote` signal until the
+    // NEXT tick's pre-filter pass. That's deliberate — it mirrors how
+    // other "state change during tick" effects propagate (observations
+    // are also built against the pre-tick snapshot).
+    const activations = await Promise.all(
+      liveAgents.map((a) => this.activation.shouldActivate(a, nextTick)),
+    );
+    const active: Agent[] = [];
+    for (let i = 0; i < liveAgents.length; i++) {
+      const a = liveAgents[i]!;
+      const decision = activations[i]!;
+      if (decision.active) {
+        active.push(a);
+      } else {
+        await this.store.recordEvent({
+          worldId: this.world.id,
+          tick: nextTick,
+          eventType: 'agent_dormant',
+          actorId: a.id,
+          data: { reason: decision.reason },
+          tokenCost: 0,
+        });
+      }
     }
 
-    // Parallel decisions (all agents see same snapshot)
+    // Parallel decisions (active agents see same snapshot)
     const results = await Promise.all(
-      liveAgents.map((a) =>
+      active.map((a) =>
         this.runtime.takeTurn(a, observations.get(a.id)!, nextTick).catch((err) => {
           console.error(`[Engine] takeTurn error for ${a.name}:`, err);
           return {
@@ -228,7 +269,7 @@ export class Engine {
     const sorted = this.sortForResolution(results, nextTick);
     for (const result of sorted) {
       if (result.action?.actionName) {
-        const agent = liveAgents.find((a) => a.id === result.agentId)!;
+        const agent = active.find((a) => a.id === result.agentId)!;
         try {
           await this.runtime.applyAction(agent, result.action, nextTick);
           await this.store.recordEvent({
@@ -243,10 +284,14 @@ export class Engine {
           console.error(`[Engine] applyAction failed for ${agent.name}:`, err);
         }
       }
-      // Persist updated agent state (history blob, tokens)
+      // Persist updated agent state. We stamp `lastActiveTick` here for
+      // every active turn, action or not — the agent was given the
+      // floor, that resets the dormancy clock regardless of whether
+      // they produced a visible action.
       await this.store.updateAgentState(result.agentId, {
         sessionStateBlob: result.historyBlob,
         tokensSpent: result.tokensSpent,
+        lastActiveTick: nextTick,
       });
     }
 
@@ -262,6 +307,16 @@ export class Engine {
         tick: nextTick,
         description: iv.description,
       });
+    }
+
+    // Settle any pending proposals whose deadline / procedure-trigger
+    // has fired this tick. Adopted proposals execute their effects
+    // through the same EffectRegistry god interventions use, so a
+    // create_rule or grant_authority applied here invalidates the
+    // enforcer cache just like a god-effect would.
+    const settled = await this.proposals.settlePending(this.world, nextTick);
+    if (settled.some((s) => s.status === 'adopted')) {
+      this.ruleEnforcer.invalidateCache();
     }
 
     // Reflection cycle

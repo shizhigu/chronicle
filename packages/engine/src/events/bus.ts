@@ -24,7 +24,17 @@ export type BusEvent =
       content: string;
       tone: string | null;
     }
-  | { type: 'death'; worldId: string; tick: number; agentId: string; reason: string };
+  | { type: 'death'; worldId: string; tick: number; agentId: string; reason: string }
+  | {
+      type: 'proposal_adopted';
+      worldId: string;
+      proposalId: string;
+      detail: string;
+      effectResults: { ok: boolean; detail: string }[];
+    }
+  | { type: 'proposal_rejected'; worldId: string; proposalId: string; detail: string }
+  | { type: 'proposal_expired'; worldId: string; proposalId: string; detail: string }
+  | { type: 'proposal_withdrawn'; worldId: string; proposalId: string; detail: string };
 
 export type Subscriber = (event: BusEvent) => void | Promise<void>;
 

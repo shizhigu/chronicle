@@ -1,17 +1,19 @@
 /**
- * ReflectionService — periodic LLM-driven summary + belief update per agent.
+ * ReflectionService — periodic LLM-driven summary per agent.
  *
- * Every `reflectionFrequency` ticks, every live agent reflects. The reflection
- * is stored as a high-importance memory so it surfaces in future observations.
+ * Every `reflectionFrequency` ticks, every live agent reflects: it writes
+ * a concise summary of the last chapter from its own POV, which then
+ * lands as a new entry in its memory.md file. Because the memory file
+ * is injected into the system prompt at session start, reflections
+ * written now will color every future turn's prompt.
  *
  * Reflection is where you'd point a stronger model if you want better
- * long-horizon coherence (per-turn can stay on a cheaper model). No provider
- * is privileged — the caller passes whatever they configured.
+ * long-horizon coherence (per-turn can stay on a cheaper model). No
+ * provider is privileged — the caller passes whatever they configured.
  */
 
-import type { Agent } from '@chronicle/core';
-import type { WorldStore } from '../store.js';
-import type { MemoryService } from './service.js';
+import type { Agent, World } from '@chronicle/core';
+import type { MemoryFileStore } from './file-store.js';
 
 export interface ReflectionDeps {
   getAgentInstance: (agent: Agent) => {
@@ -29,8 +31,8 @@ export interface ReflectionDeps {
 
 export class ReflectionService {
   constructor(
-    private store: WorldStore,
-    private memory: MemoryService,
+    private world: World,
+    private memory: MemoryFileStore,
     private deps: ReflectionDeps,
   ) {}
 
@@ -44,7 +46,7 @@ export class ReflectionService {
     );
   }
 
-  private async reflectOne(agent: Agent, tick: number): Promise<void> {
+  private async reflectOne(agent: Agent, _tick: number): Promise<void> {
     const instance = this.deps.getAgentInstance(agent);
     if (!instance) return;
 
@@ -60,11 +62,16 @@ Write a concise reflection (under 200 words) covering:
 This becomes a lasting memory for you. Be honest and in-character.`;
 
     const reflection = await instance.reflect(prompt, this.deps.reflectionModel);
+    const trimmed = reflection.trim();
+    if (!trimmed) return;
 
-    await this.memory.record(agent.id, reflection, {
-      tick,
-      type: 'reflection',
-      importance: 0.9,
-    });
+    // Write into the character's durable memory file. On char-limit
+    // overflow we swallow the error — the agent had a chance to curate
+    // its memory earlier; failing the reflection would be worse than
+    // dropping a single bloated summary.
+    const result = await this.memory.add(this.world.id, agent.id, trimmed);
+    if (!result.ok) {
+      console.warn(`[Reflection] could not store reflection for ${agent.name}: ${result.detail}`);
+    }
   }
 }

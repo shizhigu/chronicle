@@ -85,6 +85,11 @@ CREATE TABLE agents (
     death_tick INTEGER,
     parent_ids_json TEXT,                    -- ['agt_x', 'agt_y'] for offspring, null for original
 
+    -- activation (ADR-0010): last tick the agent took any turn (action or pass).
+    -- NULL until the first turn. Engine's ActivationService uses this to
+    -- enforce the idle-timeout signal.
+    last_active_tick INTEGER,
+
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -185,7 +190,16 @@ CREATE TABLE rules (
     active INTEGER NOT NULL DEFAULT 1,
     priority INTEGER NOT NULL DEFAULT 100,    -- higher = checked first
 
-    -- scope: optional JSON that narrows applicability (agentIds, locationIds, timeRange)
+    -- primary scope (ADR-0009): which entity category this rule binds to.
+    --   'world'    — global (default, pre-0009 behavior)
+    --   'group'    — only actions by members of scope_ref (group id)
+    --   'agent'    — only actions by agent scope_ref
+    --   'location' — only actions where actor is at location scope_ref
+    scope_kind TEXT NOT NULL DEFAULT 'world'
+        CHECK (scope_kind IN ('world', 'group', 'agent', 'location')),
+    scope_ref TEXT,                           -- NULL when scope_kind='world'
+
+    -- legacy fine-grained filter (still applied on top of primary scope)
     scope_json TEXT,
 
     -- provenance
@@ -278,31 +292,163 @@ CREATE INDEX idx_messages_world_tick ON messages(world_id, tick);
 CREATE INDEX idx_messages_from ON messages(from_agent_id);
 
 -- ============================================================
--- AGENT MEMORY — per-agent episodic + semantic
+-- AGENT MEMORY — moved out of SQLite.
+--
+-- Durable per-character memory now lives in a markdown file per
+-- character at <CHRONICLE_HOME>/worlds/<world_id>/characters/
+-- <agent_id>/memory.md, managed by MemoryFileStore (hermes-agent
+-- pattern). Rationale: the agent curates its own memory via three
+-- tools (memory_add / memory_replace / memory_remove), the file is
+-- injected into the system prompt at session start as a frozen
+-- snapshot for prefix-cache stability, and users can inspect or
+-- edit it with any text editor. No embeddings, no keyword scoring.
 -- ============================================================
 
-CREATE TABLE agent_memories (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    agent_id TEXT NOT NULL REFERENCES agents(id),
+-- ============================================================
+-- GOVERNANCE — groups, memberships, roles, authorities
+--
+-- See docs/adr/0009-governance-primitives.md. Layer 1 of the
+-- governance system: collective identity + authority data. Layer 2
+-- (proposals, votes, effects) lands after this is in use.
+-- ============================================================
 
-    created_tick INTEGER NOT NULL,
-    memory_type TEXT NOT NULL,                 -- 'observation', 'reflection', 'goal', 'belief_about_other'
-    content TEXT NOT NULL,
-    importance REAL NOT NULL DEFAULT 0.5,      -- 0-1, used for retrieval ranking
-    decay REAL NOT NULL DEFAULT 1.0,           -- memories fade over time if not reinforced
+CREATE TABLE groups (
+    id TEXT PRIMARY KEY,
+    world_id TEXT NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
 
-    -- optional links
-    related_event_id INTEGER REFERENCES events(id),
-    about_agent_id TEXT REFERENCES agents(id),
+    name TEXT NOT NULL,
+    description TEXT NOT NULL,
 
-    -- retrieval
-    embedding BLOB,                            -- for semantic search (populated on demand)
+    -- how this group decides things
+    procedure_kind TEXT NOT NULL
+        CHECK (procedure_kind IN ('decree', 'vote', 'consensus', 'lottery', 'delegated')),
+    procedure_config_json TEXT,                -- kind-specific params
 
-    last_accessed_tick INTEGER
+    -- optional predicate gating membership (DSL predicate string)
+    join_predicate TEXT,
+
+    -- how a role becomes filled again when vacated
+    succession_kind TEXT
+        CHECK (succession_kind IS NULL OR succession_kind IN
+            ('vote', 'inheritance', 'appointment', 'combat', 'lottery')),
+
+    -- how visible to non-members
+    visibility_policy TEXT NOT NULL DEFAULT 'open'
+        CHECK (visibility_policy IN ('open', 'closed', 'opaque')),
+
+    founded_tick INTEGER NOT NULL,
+    dissolved_tick INTEGER,                    -- NULL while active
+
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX idx_memory_agent ON agent_memories(agent_id, created_tick);
-CREATE INDEX idx_memory_importance ON agent_memories(agent_id, importance DESC);
+CREATE INDEX idx_groups_world ON groups(world_id);
+
+CREATE TABLE group_memberships (
+    group_id TEXT NOT NULL REFERENCES groups(id),
+    agent_id TEXT NOT NULL REFERENCES agents(id),
+    joined_tick INTEGER NOT NULL,
+    left_tick INTEGER,                         -- NULL while still a member
+    PRIMARY KEY (group_id, agent_id, joined_tick)
+);
+
+CREATE INDEX idx_memberships_agent ON group_memberships(agent_id);
+CREATE INDEX idx_memberships_active ON group_memberships(group_id, left_tick);
+
+-- Partial unique index — each (group_id, agent_id) pair may have at
+-- most one row where left_tick IS NULL. Prevents concurrent join
+-- races from producing duplicate active memberships while keeping the
+-- historical rows (left_tick stamped) unconstrained.
+CREATE UNIQUE INDEX idx_memberships_one_active
+    ON group_memberships(group_id, agent_id)
+    WHERE left_tick IS NULL;
+
+-- ============================================================
+-- PROPOSALS + VOTES (ADR-0009 Layer 2)
+--
+-- A proposal is a pending state-change bundle: sponsor + target group
+-- + effects. The target group's decision procedure tallies the votes
+-- and adopts/rejects. Adopted proposals run their effects_json through
+-- the same EffectRegistry GodService uses.
+-- ============================================================
+
+CREATE TABLE proposals (
+    id TEXT PRIMARY KEY,
+    world_id TEXT NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
+
+    sponsor_agent_id TEXT NOT NULL REFERENCES agents(id),
+    target_group_id TEXT NOT NULL REFERENCES groups(id),
+
+    title TEXT NOT NULL,
+    rationale TEXT NOT NULL,
+
+    -- raw effects as the sponsor submitted them
+    effects_json TEXT NOT NULL,
+    -- validator output; NULL until EffectRegistry.validate has run
+    compiled_effects_json TEXT,
+
+    opened_tick INTEGER NOT NULL,
+
+    -- polymorphic deadline (see ProposalDeadline in core/types.ts)
+    deadline_json TEXT NOT NULL,
+
+    -- optional one-off procedure override (JSON of {kind, config})
+    procedure_override_json TEXT,
+
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'adopted', 'rejected', 'withdrawn', 'expired')),
+    decided_tick INTEGER,
+    outcome_detail TEXT
+);
+
+CREATE INDEX idx_proposals_world_status ON proposals(world_id, status);
+CREATE INDEX idx_proposals_group ON proposals(target_group_id, status);
+
+CREATE TABLE votes (
+    proposal_id TEXT NOT NULL REFERENCES proposals(id),
+    voter_agent_id TEXT NOT NULL REFERENCES agents(id),
+    stance TEXT NOT NULL CHECK (stance IN ('for', 'against', 'abstain')),
+    weight REAL NOT NULL DEFAULT 1.0,
+    cast_tick INTEGER NOT NULL,
+    reasoning TEXT,
+    PRIMARY KEY (proposal_id, voter_agent_id)
+);
+
+CREATE INDEX idx_votes_proposal ON votes(proposal_id);
+
+CREATE TABLE group_roles (
+    group_id TEXT NOT NULL REFERENCES groups(id),
+    role_name TEXT NOT NULL,                   -- 'chair', 'high_priest', 'treasurer', ...
+    holder_agent_id TEXT REFERENCES agents(id),  -- NULL when vacant
+    assigned_tick INTEGER,
+    voting_weight REAL NOT NULL DEFAULT 1.0,   -- used when procedure weights='role'
+    scope_ref TEXT,                            -- extra scope carried by the role
+    PRIMARY KEY (group_id, role_name)
+);
+
+CREATE TABLE authorities (
+    id TEXT PRIMARY KEY,
+    world_id TEXT NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
+
+    -- who holds this authority
+    holder_kind TEXT NOT NULL
+        CHECK (holder_kind IN ('group', 'agent', 'role')),
+    holder_ref TEXT NOT NULL,                  -- group_id | agent_id | group_id#role_name
+
+    -- powers: JSON list of typed power records, see core/src/types.ts AuthorityPower
+    powers_json TEXT NOT NULL,
+
+    granted_tick INTEGER NOT NULL,
+    expires_tick INTEGER,                      -- NULL = indefinite
+
+    -- audit trail
+    source_event_id INTEGER REFERENCES events(id),
+    revoked_tick INTEGER,
+    revocation_event_id INTEGER REFERENCES events(id)
+);
+
+CREATE INDEX idx_authorities_world ON authorities(world_id);
+CREATE INDEX idx_authorities_holder ON authorities(world_id, holder_kind, holder_ref);
 
 -- ============================================================
 -- RELATIONSHIPS — agent-to-agent bonds

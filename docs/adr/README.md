@@ -56,6 +56,12 @@ A superseded ADR has a link to the ADR that replaced it. A replacing ADR has a l
 | 0006 | [TypeScript strict mode, all the way down](0006-typescript-strict.md) | accepted |
 | 0007 | [Natural language is the primary configuration surface](0007-natural-language-config.md) | accepted |
 | 0008 | [Predicate DSL grammar scope — what's in, what's out](0008-dsl-grammar-scope.md) | accepted |
+| 0009 | [Governance primitives — groups, authority, proposals, effects](0009-governance-primitives.md) | accepted (Layer 1+2) |
+| 0010 | [Agent activation model — pre-filter + voluntary pass](0010-agent-activation.md) | accepted |
+| 0011 | [Claude Code integration — mid-run edit CLI + CC skill](0011-cc-integration.md) | accepted |
+| 0012 | [Transport-layer redaction for API keys and tokens](0012-transport-redaction.md) | accepted |
+| 0013 | [Resilience — typed error classifier + jittered retry](0013-resilience.md) | accepted |
+| 0014 | [Credential pool — multi-key selection + cooldown](0014-credential-pool.md) | accepted |
 
 ---
 

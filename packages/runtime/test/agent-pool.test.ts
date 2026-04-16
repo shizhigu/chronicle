@@ -196,7 +196,6 @@ function makeObservation(tick: number): Observation {
     },
     nearby: { agents: [], resources: [], locations: [] },
     recentEvents: [],
-    relevantMemories: [],
     currentGoals: [],
   };
 }
@@ -414,6 +413,92 @@ describe('AgentPool — takeTurn + hooks', () => {
 
     await pool.takeTurn(alice, makeObservation(1), 1);
     expect(seen).toEqual([{ tool: 'think', isError: false }]);
+  });
+});
+
+describe('AgentPool — retry on transient provider failures (ADR-0013)', () => {
+  it('retries a 503 and eventually succeeds', async () => {
+    const instances: FakeAgent[] = [];
+    const pool = new AgentPool({
+      store,
+      ruleEnforcer: enforcer,
+      events,
+      piLoader: async () => fakePiLoader(instances),
+      retryOptions: { baseDelayMs: 1, maxDelayMs: 2, sleep: async () => {} },
+    });
+    await pool.hydrate(world, [alice]);
+
+    const inst = instances[0]!;
+    inst.nextAction = { tool: 'think', args: { thought: 'ok' } };
+
+    // Make the first 2 prompt() calls throw a retryable 503, third succeeds.
+    const original = inst.prompt.bind(inst);
+    let promptCalls = 0;
+    inst.prompt = async (text: string) => {
+      promptCalls++;
+      if (promptCalls < 3) throw { status: 503, message: 'overloaded' };
+      return original(text);
+    };
+
+    const result = await pool.takeTurn(alice, makeObservation(1), 1);
+
+    expect(promptCalls).toBe(3);
+    expect(result.error).toBeUndefined();
+    expect(result.action?.actionName).toBe('think');
+  });
+
+  it('non-retryable errors (401) short-circuit on attempt 1', async () => {
+    const instances: FakeAgent[] = [];
+    const pool = new AgentPool({
+      store,
+      ruleEnforcer: enforcer,
+      events,
+      piLoader: async () => fakePiLoader(instances),
+      retryOptions: { baseDelayMs: 1, sleep: async () => {} },
+    });
+    await pool.hydrate(world, [alice]);
+
+    const inst = instances[0]!;
+    let promptCalls = 0;
+    inst.prompt = async () => {
+      promptCalls++;
+      throw { status: 401, message: 'unauthorized' };
+    };
+
+    const result = await pool.takeTurn(alice, makeObservation(1), 1);
+
+    expect(promptCalls).toBe(1);
+    expect(result.action).toBeNull();
+    expect(result.error).toMatch(/auth:/);
+  });
+
+  it('exhausts maxAttempts on persistent retryable failure and returns classified error', async () => {
+    const instances: FakeAgent[] = [];
+    const pool = new AgentPool({
+      store,
+      ruleEnforcer: enforcer,
+      events,
+      piLoader: async () => fakePiLoader(instances),
+      retryOptions: {
+        maxAttempts: 2,
+        baseDelayMs: 1,
+        maxDelayMs: 2,
+        sleep: async () => {},
+      },
+    });
+    await pool.hydrate(world, [alice]);
+
+    const inst = instances[0]!;
+    let promptCalls = 0;
+    inst.prompt = async () => {
+      promptCalls++;
+      throw { status: 429, message: 'rate limited' };
+    };
+
+    const result = await pool.takeTurn(alice, makeObservation(1), 1);
+    expect(promptCalls).toBe(2);
+    expect(result.action).toBeNull();
+    expect(result.error).toMatch(/rate_limit:/);
   });
 });
 

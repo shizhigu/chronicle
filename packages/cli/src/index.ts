@@ -22,17 +22,31 @@
  */
 
 import { Command } from 'commander';
+import { addGroupCommand } from './commands/add-group.js';
+import { addLocationCommand } from './commands/add-location.js';
+import { addMemberCommand } from './commands/add-member.js';
+import { addRuleCommand } from './commands/add-rule.js';
+import { applyEffectCommand } from './commands/apply-effect.js';
 import { registerAuthCommand } from './commands/auth.js';
 import { configCommand } from './commands/config.js';
 import { createWorldCommand } from './commands/create-world.js';
 import { dashboardCommand } from './commands/dashboard.js';
+import { dissolveGroupCommand } from './commands/dissolve-group.js';
 import { registerDoctorCommand } from './commands/doctor.js';
+import { editCharacterCommand } from './commands/edit-character.js';
 import { exportCommand } from './commands/export.js';
+import { grantAuthorityCommand } from './commands/grant-authority.js';
 import { importCommand } from './commands/import.js';
 import { interactiveInit } from './commands/interactive.js';
 import { interveneCommand } from './commands/intervene.js';
+import { listAgentsCommand } from './commands/list-agents.js';
+import { listGroupsCommand } from './commands/list-groups.js';
+import { listLocationsCommand } from './commands/list-locations.js';
+import { listRulesCommand } from './commands/list-rules.js';
 import { listCommand } from './commands/list.js';
 import { registerOnboardCommand } from './commands/onboard.js';
+import { removeMemberCommand } from './commands/remove-member.js';
+import { removeRuleCommand } from './commands/remove-rule.js';
 import { runCommand } from './commands/run.js';
 import { watchCommand } from './commands/watch.js';
 import { summariseError } from './errors.js';
@@ -89,6 +103,125 @@ program
   .description('Queue a god event for next tick')
   .requiredOption('--event <text>', 'event description')
   .action(interveneCommand);
+
+program
+  .command('apply-effect <worldId>')
+  .description('Queue a structured effect (ADR-0011). CC-facing escape hatch.')
+  .option('--json <effect>', 'single Effect JSON object')
+  .option('--json-array <effects>', 'JSON array of Effect objects')
+  .option('--at <tick>', 'tick to apply (defaults to next)')
+  .option('--description <text>', 'human-readable summary for the event log')
+  .action(applyEffectCommand);
+
+program
+  .command('edit-character <worldId> <nameOrId>')
+  .description('Edit an agent in a running world (persona / mood / privateState / traits)')
+  .option('--persona <text>', 'replace the persona paragraph')
+  .option('--mood <text>', 'new mood (empty string clears)')
+  .option('--private-state <json>', 'new privateState JSON object (empty string clears)')
+  .option('--traits <json>', 'replace traits (JSON object)')
+  .option('--at <tick>', 'tick to apply (defaults to next)')
+  .action(editCharacterCommand);
+
+program
+  .command('add-rule <worldId>')
+  .description('Add a new rule to a running world (create_rule effect, applies next tick)')
+  .requiredOption('--description <text>', 'natural-language description')
+  .requiredOption('--tier <hard|soft|economic>', 'rule tier')
+  .option('--check <predicate>', 'hard-tier predicate that must be true (required for hard)')
+  .option('--predicate <expr>', 'optional predicate scoping which actions the rule considers')
+  .option('--on-violation <action>', 'reject | auto_correct | penalty:energy=10 (defaults reject)')
+  .option('--soft-norm <text>', 'soft-tier norm text injected into prompts')
+  .option('--economic-action-type <name>', 'economic-tier: action this cost applies to')
+  .option('--economic-cost-formula <formula>', 'economic-tier: e.g. "energy=2,tokens=5"')
+  .option('--scope-kind <kind>', 'world | group | agent | location (default world)')
+  .option('--scope-ref <id>', 'required when scope-kind != world')
+  .option('--at <tick>', 'tick to apply (defaults to next)')
+  .action(addRuleCommand);
+
+program
+  .command('remove-rule <worldId> <ruleId>')
+  .description('Repeal an active rule (repeal_rule effect, applies next tick)')
+  .option('--at <tick>', 'tick to apply (defaults to next)')
+  .action(removeRuleCommand);
+
+program
+  .command('list-rules <worldId>')
+  .description('Print all active rules in a world')
+  .option('--json', 'emit JSON array instead of a human-readable table')
+  .action(listRulesCommand);
+
+program
+  .command('list-groups <worldId>')
+  .description('Print all groups in a world (members, procedure, visibility)')
+  .option('--json', 'emit JSON array instead of a human-readable table')
+  .option('--include-dissolved', 'include dissolved groups (default excluded)')
+  .action(listGroupsCommand);
+
+program
+  .command('list-locations <worldId>')
+  .description('Print all locations in a world with their adjacency graph')
+  .option('--json', 'emit JSON array instead of a human-readable table')
+  .action(listLocationsCommand);
+
+program
+  .command('list-agents <worldId>')
+  .description('Print all agents in a world (name, location, mood, energy/health)')
+  .option('--json', 'emit JSON array instead of a human-readable table')
+  .option('--include-dead', 'include dead agents (default excluded)')
+  .action(listAgentsCommand);
+
+program
+  .command('add-location <worldId>')
+  .description('Add a new location to a running world (create_location effect, applies next tick)')
+  .requiredOption('--name <text>', 'location name (unique per world, case-insensitive)')
+  .requiredOption('--description <text>', 'natural-language description')
+  .option('--adjacent <names>', 'comma-separated list of existing location names to connect')
+  .option('--sprite-hint <hint>', 'frontend rendering hint')
+  .option('--at <tick>', 'tick to apply (defaults to next)')
+  .action(addLocationCommand);
+
+program
+  .command('add-group <worldId>')
+  .description('Add a new group to a running world (create_group effect, applies next tick)')
+  .requiredOption('--name <text>', 'group name (unique per world, case-insensitive)')
+  .requiredOption('--description <text>', 'natural-language description')
+  .requiredOption('--procedure <kind>', 'decree | vote | consensus | lottery | delegated')
+  .option('--procedure-config <json>', 'procedure-specific config (JSON object)')
+  .option('--visibility <policy>', 'open | closed | opaque (default open)')
+  .option('--members <refs>', 'comma-separated agent ids OR names for initial members')
+  .option('--at <tick>', 'tick to apply (defaults to next)')
+  .action(addGroupCommand);
+
+program
+  .command('dissolve-group <worldId> <groupRef>')
+  .description('Dissolve an active group (dissolve_group effect, applies next tick)')
+  .option('--at <tick>', 'tick to apply (defaults to next)')
+  .action(dissolveGroupCommand);
+
+program
+  .command('add-member <worldId> <groupRef> <agentRef>')
+  .description('Add an agent to a group (add_member effect, applies next tick)')
+  .option('--at <tick>', 'tick to apply (defaults to next)')
+  .action(addMemberCommand);
+
+program
+  .command('remove-member <worldId> <groupRef> <agentRef>')
+  .description('Remove an agent from a group (remove_member effect, applies next tick)')
+  .option('--at <tick>', 'tick to apply (defaults to next)')
+  .action(removeMemberCommand);
+
+program
+  .command('grant-authority <worldId>')
+  .description(
+    'Grant an authority to an agent / group / role (grant_authority effect, applies next tick)',
+  )
+  .requiredOption('--to-kind <kind>', 'agent | group | role')
+  .requiredOption('--to-ref <ref>', 'holder id (agentId / groupId / "groupId#roleName")')
+  .requiredOption('--powers <json>', 'JSON array of AuthorityPower objects')
+  .option('--expires-tick <n>', 'tick at which the authority lapses (default indefinite)')
+  .option('--at <tick>', 'tick to apply (defaults to next)')
+  .action(grantAuthorityCommand);
 
 program
   .command('export <worldId>')

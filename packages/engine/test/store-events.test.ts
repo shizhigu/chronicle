@@ -1,10 +1,11 @@
 /**
- * Event log and memory persistence tests.
+ * Event log persistence tests. Memory persistence lives in
+ * memory-file-store.test.ts now that durable memory is file-backed.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { agentId, worldId } from '@chronicle/core';
-import type { Agent, World } from '@chronicle/core';
+import { worldId } from '@chronicle/core';
+import type { World } from '@chronicle/core';
 import { WorldStore } from '../src/store.js';
 
 let store: WorldStore;
@@ -123,115 +124,4 @@ describe('Events', () => {
   });
 });
 
-describe('Memories', () => {
-  let alice: Agent;
-  beforeEach(async () => {
-    alice = {
-      id: agentId(),
-      worldId: world.id,
-      name: 'A',
-      persona: '',
-      traits: {},
-      privateState: null,
-      alive: true,
-      locationId: null,
-      mood: null,
-      energy: 100,
-      health: 100,
-      tokensBudget: null,
-      tokensSpent: 0,
-      sessionId: null,
-      sessionStateBlob: null,
-      modelTier: 'haiku',
-      provider: 'anthropic',
-      modelId: 'm',
-      thinkingLevel: 'low',
-      birthTick: 0,
-      deathTick: null,
-      parentIds: null,
-      createdAt: new Date().toISOString(),
-    };
-    await store.createAgent(alice);
-  });
-
-  it('orders memories by importance desc, then recency desc', async () => {
-    await store.addMemory({
-      agentId: alice.id,
-      createdTick: 0,
-      memoryType: 'observation',
-      content: 'mid',
-      importance: 0.5,
-      decay: 1,
-      relatedEventId: null,
-      aboutAgentId: null,
-      embedding: null,
-      lastAccessedTick: null,
-    });
-    await store.addMemory({
-      agentId: alice.id,
-      createdTick: 5,
-      memoryType: 'observation',
-      content: 'high recent',
-      importance: 0.9,
-      decay: 1,
-      relatedEventId: null,
-      aboutAgentId: null,
-      embedding: null,
-      lastAccessedTick: null,
-    });
-    await store.addMemory({
-      agentId: alice.id,
-      createdTick: 10,
-      memoryType: 'observation',
-      content: 'high later',
-      importance: 0.9,
-      decay: 1,
-      relatedEventId: null,
-      aboutAgentId: null,
-      embedding: null,
-      lastAccessedTick: null,
-    });
-
-    const mems = await store.getMemoriesForAgent(alice.id);
-    expect(mems[0]?.content).toBe('high later');
-    expect(mems[1]?.content).toBe('high recent');
-    expect(mems[2]?.content).toBe('mid');
-  });
-
-  it('limits memory count', async () => {
-    for (let i = 0; i < 10; i++) {
-      await store.addMemory({
-        agentId: alice.id,
-        createdTick: i,
-        memoryType: 'observation',
-        content: `m${i}`,
-        importance: i / 10,
-        decay: 1,
-        relatedEventId: null,
-        aboutAgentId: null,
-        embedding: null,
-        lastAccessedTick: null,
-      });
-    }
-    const mems = await store.getMemoriesForAgent(alice.id, 3);
-    expect(mems.length).toBe(3);
-  });
-
-  it('updates lastAccessedTick', async () => {
-    const id = await store.addMemory({
-      agentId: alice.id,
-      createdTick: 0,
-      memoryType: 'observation',
-      content: 'x',
-      importance: 0.5,
-      decay: 1,
-      relatedEventId: null,
-      aboutAgentId: null,
-      embedding: null,
-      lastAccessedTick: null,
-    });
-    await store.updateMemoryAccessed(id, 42);
-    const mems = await store.getMemoriesForAgent(alice.id, 10);
-    expect(mems[0]?.lastAccessedTick).toBe(42);
-  });
-});
+// Memory persistence was moved to MemoryFileStore — see memory-file-store.test.ts.
