@@ -24,6 +24,8 @@
 10. **[METRICS.md](METRICS.md)** — What we measure, what healthy looks like.
 11. **[ROADMAP.md](ROADMAP.md)** — Milestones and timing.
 12. **[COMPETITION.md](COMPETITION.md)** — Landscape, moats, risks.
+13. **[DIFFERENTIATION.md](DIFFERENTIATION.md)** — Honest accounting of how Chronicle differs from Smallville / AI Town / Concordia / AgentSociety.
+14. **[RELATED_WORK.md](RELATED_WORK.md)** — Landscape map of prior art.
 
 ## Operations & Responsibility
 

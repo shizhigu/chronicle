@@ -31,10 +31,6 @@ const ConfigSchema = z.object({
   reflectionProvider: z.string().optional(),
   reflectionModel: z.string().optional(),
 
-  /** Historical aliases some code paths still read — keep as pass-throughs. */
-  sonnetProvider: z.string().optional(),
-  sonnetModel: z.string().optional(),
-
   /** Override pi-agent's env-var lookup per provider. Never includes a literal key. */
   providers: z
     .record(
@@ -101,9 +97,11 @@ export function resolveDefaultModel(cfg: Config): { provider: string; modelId: s
 }
 
 export function resolveReflectionModel(cfg: Config): { provider: string; modelId: string } {
-  // Fallback chain: reflection* → sonnet* (legacy alias) → default*
-  const provider = cfg.reflectionProvider ?? cfg.sonnetProvider ?? cfg.defaultProvider;
-  const modelId = cfg.reflectionModel ?? cfg.sonnetModel ?? cfg.defaultModel;
+  // If no reflection-specific model is set, fall back to the default model.
+  // Users who want a stronger model for reflection point
+  // `reflectionProvider` / `reflectionModel` at one.
+  const provider = cfg.reflectionProvider ?? cfg.defaultProvider;
+  const modelId = cfg.reflectionModel ?? cfg.defaultModel;
   if (!provider || !modelId) {
     throw new Error(
       'No reflection model configured. Run `chronicle onboard` or edit ~/.chronicle/config.json.',
