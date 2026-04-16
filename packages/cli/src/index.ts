@@ -30,6 +30,7 @@ import { importCommand } from './commands/import.js';
 import { interactiveInit } from './commands/interactive.js';
 import { interveneCommand } from './commands/intervene.js';
 import { listCommand } from './commands/list.js';
+import { registerOnboardCommand } from './commands/onboard.js';
 import { runCommand } from './commands/run.js';
 import { watchCommand } from './commands/watch.js';
 
@@ -42,6 +43,8 @@ program
   .command('init', { isDefault: true })
   .description('Welcome + interactive onboarding')
   .action(interactiveInit);
+
+registerOnboardCommand(program);
 
 program
   .command('create-world')

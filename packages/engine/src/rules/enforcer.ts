@@ -10,6 +10,7 @@
 import type { Agent, ProposedAction, Rule, ValidationResult, World } from '@chronicle/core';
 
 import type { WorldStore } from '../store.js';
+import { evaluatePredicateSafe } from './predicate.js';
 
 export interface ValidateArgs {
   character: Agent;
@@ -195,20 +196,22 @@ function evaluateHardPredicate(
   expr: string,
   ctx: { character: Agent; action: ProposedAction; world: World },
 ): boolean {
-  // Minimal DSL: supports dotted access + comparisons
-  // e.g. "character.alive == true", "character.energy >= 5", "action.args.target.distance <= 3"
-  // TODO: use a safe expression evaluator (e.g. jsep + custom evaluator)
-  try {
-    const simpleChecks: Record<string, () => boolean> = {
-      'character.alive': () => ctx.character.alive,
-      'character.energy >= 5': () => ctx.character.energy >= 5,
-      // ... populated at rule compile time
-    };
-    if (expr in simpleChecks) return simpleChecks[expr]!();
-    return true; // default allow if we can't parse yet
-  } catch {
-    return true;
-  }
+  // Flatten the action shape so compiled predicates can say `action.name`
+  // (matching the tool name) and `action.args.*`. `character.*` and `world.*`
+  // are passed through verbatim.
+  const predicateCtx = {
+    character: ctx.character,
+    action: {
+      name: ctx.action.actionName,
+      args: ctx.action.args,
+      agentId: ctx.action.agentId,
+      proposedAt: ctx.action.proposedAt,
+    },
+    world: ctx.world,
+  };
+  // On malformed predicates, default to "allow" — same as before, but
+  // `evaluatePredicateSafe` has proper error boundaries and logs upstream.
+  return evaluatePredicateSafe(expr, predicateCtx, true);
 }
 
 async function autoCorrectAction(
