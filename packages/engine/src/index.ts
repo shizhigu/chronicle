@@ -37,6 +37,7 @@ export { CatalystInjector } from './narrative/catalyst.js';
 export { GodService } from './god/service.js';
 export { WebSocketBridge, type BridgeOpts } from './bridge/websocket.js';
 export { WorldStateServer, type StateServerOpts } from './bridge/state-server.js';
+export { DbEventRelay, type DbEventRelayOpts } from './bridge/db-event-relay.js';
 export type { AgentRuntimeAdapter } from './engine.js';
 export {
   evaluatePredicate,

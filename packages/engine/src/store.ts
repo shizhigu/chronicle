@@ -472,6 +472,23 @@ export class WorldStore {
     return rows.map(mapEventFromRow);
   }
 
+  /**
+   * Cursor-style query used by the dashboard DbEventRelay (ADR follow-up
+   * to ADR-0003): fetch events with id greater than the cursor, in order,
+   * so polling can advance without re-processing rows. Unlike
+   * `getEventsInRange` this is by id, not tick — two events in the same
+   * tick are still delivered in deterministic id order.
+   */
+  async getEventsAfter(worldId: string, afterId: number, limit = 500): Promise<Event[]> {
+    const rows = await this.orm
+      .select()
+      .from(s.events)
+      .where(and(eq(s.events.worldId, worldId), sql`${s.events.id} > ${afterId}`))
+      .orderBy(asc(s.events.id))
+      .limit(limit);
+    return rows.map(mapEventFromRow);
+  }
+
   // ============================================================
   // MEMORIES — moved out of the DB.
   //

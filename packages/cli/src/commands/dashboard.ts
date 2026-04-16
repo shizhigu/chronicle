@@ -9,6 +9,7 @@
  */
 
 import {
+  DbEventRelay,
   Engine,
   EventBus,
   RuleEnforcer,
@@ -60,6 +61,16 @@ export async function dashboardCommand(worldId: string, opts: Options): Promise<
   const stateServer = new WorldStateServer(store, { port: statePort });
   stateServer.start();
 
+  // Cross-process event relay: `chronicle run` lives in a separate
+  // shell with a disjoint in-memory EventBus, so nothing it emits
+  // reaches our WS subscribers. The relay polls the events table
+  // (event-sourced per ADR-0003) and re-emits each new row on our
+  // bus, which the WebSocketBridge then forwards to connected UIs.
+  // Without this, the dashboard stays dead while the simulation
+  // is roaring along in another shell.
+  const relay = new DbEventRelay({ store, bus: engine.bus, worldId, fromTick: world.currentTick });
+  await relay.start();
+
   console.log(`✓ WebSocket bridge running at ws://localhost:${wsPort}`);
   console.log(
     `✓ World-state API running at http://localhost:${statePort}/api/worlds/${worldId}/state`,
@@ -81,6 +92,7 @@ export async function dashboardCommand(worldId: string, opts: Options): Promise<
   await new Promise<void>((resolve) => {
     process.on('SIGINT', () => {
       console.log('\nShutting down...');
+      relay.stop().catch(() => {});
       bridge.stop();
       stateServer.stop();
       engine.shutdown().finally(() => resolve());

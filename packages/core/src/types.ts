@@ -235,7 +235,10 @@ export type EventType =
   | 'proposal_withdrawn'
   | 'vote_cast'
   // activation (ADR-0010)
-  | 'agent_dormant';
+  | 'agent_dormant'
+  // Active agent took a turn but produced no tool call — distinct
+  // from `agent_dormant` (engine skipped the turn). See engine.ts.
+  | 'agent_silent';
 
 export interface Event {
   id: number;
