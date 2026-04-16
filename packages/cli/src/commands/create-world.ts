@@ -15,7 +15,12 @@ interface Options {
   provider?: string;
 }
 
-export async function createWorldCommand(opts: Options): Promise<void> {
+/** Injectable deps — tests pass a mock WorldCompiler to avoid real LLM calls. */
+export interface CreateWorldDeps {
+  compiler?: WorldCompiler;
+}
+
+export async function createWorldCommand(opts: Options, deps: CreateWorldDeps = {}): Promise<void> {
   const config = await loadConfig();
   const provider = opts.provider ?? config.defaultProvider;
   const model = opts.model ?? config.defaultModel;
@@ -23,10 +28,12 @@ export async function createWorldCommand(opts: Options): Promise<void> {
   const store = await WorldStore.open(paths.db);
 
   console.log('✓ Parsing your description with AI...');
-  const compiler = new WorldCompiler({
-    provider: config.sonnetProvider,
-    modelId: config.sonnetModel,
-  });
+  const compiler =
+    deps.compiler ??
+    new WorldCompiler({
+      provider: config.sonnetProvider,
+      modelId: config.sonnetModel,
+    });
 
   const compiled = await compiler.parseDescription(opts.desc);
 
@@ -74,6 +81,7 @@ export async function createWorldCommand(opts: Options): Promise<void> {
   ]);
 
   store.close();
+  return;
 }
 
 function estimateCost(agentCount: number, tickCount: number, modelId: string): number {

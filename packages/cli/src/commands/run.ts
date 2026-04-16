@@ -44,7 +44,12 @@ export async function runCommand(worldId: string, opts: Options): Promise<void> 
     runtime,
     sonnetModel: { provider: config.sonnetProvider, modelId: config.sonnetModel },
   });
-  await engine.init();
+  try {
+    await engine.init();
+  } catch (err) {
+    store.close(); // don't leak the outer connection if Engine fails to init
+    throw err;
+  }
 
   // Subscribe for --live output
   if (opts.live) {
@@ -73,6 +78,10 @@ export async function runCommand(worldId: string, opts: Options): Promise<void> 
     await engine.run({ ticks, budget, untilEvent: opts.untilEvent });
   } finally {
     await engine.shutdown();
+    // Close the outer store handle — Engine.init() opens its own store at the
+    // same dbPath, and leaving this one dangling holds a SQLite connection
+    // (and can hold a WAL lock) until the process exits.
+    store.close();
   }
 
   const endTick = engine.worldState.currentTick;
