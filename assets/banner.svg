@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 280" width="100%" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Chronicle — describe any world, watch it play out">
+  <defs>
+    <linearGradient id="chronicle-gold" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#F4D27A"/>
+      <stop offset="45%" stop-color="#D4AF37"/>
+      <stop offset="100%" stop-color="#8B6914"/>
+    </linearGradient>
+    <radialGradient id="chronicle-vignette" cx="50%" cy="50%" r="70%">
+      <stop offset="55%" stop-color="#0A0A0A" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.65"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1200" height="280" fill="#0A0A0A"/>
+  <rect width="1200" height="280" fill="url(#chronicle-vignette)"/>
+
+  <!-- top ornament rule -->
+  <line x1="140" y1="42" x2="1060" y2="42" stroke="#C9A959" stroke-width="0.6" opacity="0.45"/>
+  <circle cx="140" cy="42" r="3" fill="#D4AF37"/>
+  <circle cx="1060" cy="42" r="3" fill="#D4AF37"/>
+  <circle cx="600" cy="42" r="2.2" fill="#D4AF37"/>
+
+  <!-- wordmark -->
+  <text x="600" y="172" text-anchor="middle"
+        font-family="Georgia, 'Times New Roman', Times, serif"
+        font-size="112" font-weight="bold" letter-spacing="14"
+        fill="url(#chronicle-gold)">CHRONICLE</text>
+
+  <!-- tagline -->
+  <text x="600" y="218" text-anchor="middle"
+        font-family="Georgia, 'Times New Roman', Times, serif"
+        font-size="13" letter-spacing="11"
+        fill="#C9A959">
+    DESCRIBE ANY WORLD &#8226; WATCH IT PLAY OUT
+  </text>
+
+  <!-- bottom ornament rule -->
+  <line x1="140" y1="240" x2="1060" y2="240" stroke="#C9A959" stroke-width="0.6" opacity="0.45"/>
+  <circle cx="140" cy="240" r="3" fill="#D4AF37"/>
+  <circle cx="1060" cy="240" r="3" fill="#D4AF37"/>
+  <circle cx="600" cy="240" r="2.2" fill="#D4AF37"/>
+</svg>

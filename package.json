@@ -37,12 +37,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/chronicle-sh/chronicle.git"
+    "url": "git+https://github.com/shizhigu/chronicle.git"
   },
   "bugs": {
-    "url": "https://github.com/chronicle-sh/chronicle/issues"
+    "url": "https://github.com/shizhigu/chronicle/issues"
   },
-  "homepage": "https://chronicle.sh",
+  "homepage": "https://github.com/shizhigu/chronicle#readme",
   "license": "MIT",
   "author": "Chronicle Contributors"
 }
