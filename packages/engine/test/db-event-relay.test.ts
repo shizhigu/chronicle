@@ -139,7 +139,29 @@ describe('DbEventRelay', () => {
     await relay.stop();
   });
 
-  it('drops types with no UI representation silently (agent_dormant, catalyst, etc.)', async () => {
+  it('surfaces catalyst DB rows as catalyst BusEvents', async () => {
+    const relay = new DbEventRelay({ store, bus, worldId: world.id, fromEventId: 0 });
+    await relay.start();
+    await store.recordEvent({
+      worldId: world.id,
+      tick: 1,
+      eventType: 'catalyst',
+      actorId: null,
+      data: { description: 'A raven lands.', atmosphereTag: 'medieval_court' },
+      tokenCost: 0,
+    });
+    await relay.poll();
+    const cat = captured.find((e) => e.type === 'catalyst') as Extract<
+      BusEvent,
+      { type: 'catalyst' }
+    >;
+    expect(cat).toBeDefined();
+    expect(cat.description).toBe('A raven lands.');
+    expect(cat.atmosphereTag).toBe('medieval_court');
+    await relay.stop();
+  });
+
+  it('drops types with no UI representation silently (agent_dormant, agent_silent)', async () => {
     const relay = new DbEventRelay({ store, bus, worldId: world.id, fromEventId: 0 });
     await relay.start();
     await store.recordEvent({

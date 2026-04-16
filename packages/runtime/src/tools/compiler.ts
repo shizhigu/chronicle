@@ -898,16 +898,16 @@ async function executeTake(
   const amount = Math.min(resource.quantity, 1);
   await ctx.store.adjustResourceQuantity(resource.id, -amount);
   await ctx.store.transferResource(resource.id, ctx.character.id);
-  // Record as event with high importance to witnesses
-  await ctx.store.recordEvent({
-    worldId: ctx.world.id,
-    tick: ctx.tick,
-    eventType: 'action',
-    actorId: ctx.character.id,
-    data: { action: 'take_without_consent', target: args.from, resource: args.resource, amount },
-    tokenCost: 0,
-  });
-  return { ok: true, detail: `took:${args.resource}` };
+  // Previously self-recorded a duplicate `action` row with
+  // `action: 'take_without_consent'` to flag the morality. The
+  // engine's extractPrimaryToolCall now records the primary action
+  // with the raw `{resource, from}` args — witnesses and rule
+  // enforcers can infer the non-consent flavor from `from` pointing
+  // at another agent (a consenting transfer uses `give`). Encoding
+  // a moral classification as a second duplicate `action` row
+  // confuses event-log consumers; a dedicated `moral_violation`
+  // event_type is the right home for that if we want it later.
+  return { ok: true, detail: `took:${args.resource}:from:${args.from}:amount:${amount}` };
 }
 
 async function executeSleep(ctx: ExecutionContext): Promise<ExecuteResult> {

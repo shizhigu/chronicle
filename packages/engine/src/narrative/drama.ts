@@ -34,6 +34,21 @@ const WEIGHTS: Record<string, number> = {
   catalyst: 0.6,
   tick_begin: 0,
   tick_end: 0,
+  // Non-events. An agent being dormant or producing no tool call is
+  // the ABSENCE of drama. Previously these fell through to the 0.1
+  // default, so a totally silent run steadily drifted upward toward
+  // the catalyst threshold for no reason.
+  agent_dormant: 0,
+  agent_silent: 0,
+  // Governance lifecycle moments — narratively meaningful, but not
+  // as high-stakes as death/violence. Hand-tuned so a council vote
+  // reads as dramatic punctuation rather than as noise.
+  proposal_opened: 0.3,
+  proposal_adopted: 0.6,
+  proposal_rejected: 0.6,
+  proposal_expired: 0.2,
+  proposal_withdrawn: 0.2,
+  vote_cast: 0.2,
 };
 
 export class DramaDetector {

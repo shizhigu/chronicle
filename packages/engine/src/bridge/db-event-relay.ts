@@ -237,6 +237,18 @@ export class DbEventRelay {
             reason: (ev.data as { reason?: string }).reason ?? 'unknown',
           },
         ];
+      case 'catalyst': {
+        const data = ev.data as { description?: string; atmosphereTag?: string };
+        return [
+          {
+            type: 'catalyst',
+            worldId: ev.worldId,
+            tick: ev.tick,
+            description: data.description ?? 'something shifted',
+            atmosphereTag: data.atmosphereTag,
+          },
+        ];
+      }
       case 'proposal_adopted':
       case 'proposal_rejected':
       case 'proposal_expired':
@@ -264,7 +276,6 @@ export class DbEventRelay {
       case 'agent_reflection':
       case 'rule_violation':
       case 'birth':
-      case 'catalyst':
       case 'proposal_opened':
       case 'vote_cast':
       case 'agent_dormant':

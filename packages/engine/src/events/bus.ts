@@ -34,7 +34,18 @@ export type BusEvent =
     }
   | { type: 'proposal_rejected'; worldId: string; proposalId: string; detail: string }
   | { type: 'proposal_expired'; worldId: string; proposalId: string; detail: string }
-  | { type: 'proposal_withdrawn'; worldId: string; proposalId: string; detail: string };
+  | { type: 'proposal_withdrawn'; worldId: string; proposalId: string; detail: string }
+  // Narrative catalyst the engine injects when drama is stale — stored
+  // to the events table by the CatalystInjector and surfaced to the
+  // dashboard via DbEventRelay. Previously absent from this union:
+  // UIs declared a `catalyst` WireEvent shape that nothing ever sent.
+  | {
+      type: 'catalyst';
+      worldId: string;
+      tick: number;
+      description: string;
+      atmosphereTag?: string;
+    };
 
 export type Subscriber = (event: BusEvent) => void | Promise<void>;
 
