@@ -22,18 +22,21 @@ const MODEL = resolveLmStudioModel();
 describe.skipIf(!READY)('live LLM · LM Studio', () => {
   it('compiler LLM wrapper round-trips a short prompt', async () => {
     const llm = createLlm();
+    // Reasoning-capable local models (Gemma w/ thinking, Qwen, DeepSeek-R1)
+    // spend tokens on internal reasoning before the answer. Keep the cap
+    // generous — wall-clock is the only cost here.
     const answer = await llm.call({
       provider: 'lmstudio',
       modelId: MODEL,
       system: 'You answer with ONLY a single digit, nothing else.',
       user: 'What is 2 + 2?',
-      maxTokens: 10,
+      maxTokens: 200,
       temperature: 0,
     });
     expect(typeof answer).toBe('string');
     expect(answer.length).toBeGreaterThan(0);
     expect(answer).toMatch(/4/);
-  });
+  }, 60_000);
 
   it('parseJsonResponse works on real model output', async () => {
     const llm = createLlm();
