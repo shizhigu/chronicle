@@ -11,6 +11,7 @@
 import { existsSync, statSync } from 'node:fs';
 import chalk from 'chalk';
 import type { Command } from 'commander';
+import { listStoredProviders, loadAuth } from '../auth-storage.js';
 import { loadConfig } from '../config.js';
 import { printNextSteps } from '../output.js';
 import { paths } from '../paths.js';
@@ -57,6 +58,13 @@ interface DoctorState {
   dbFilePath: string;
   dbExists: boolean;
   dbSizeMb: number | null;
+  /** Credential-store state. Never surfaces actual tokens — just presence + mode. */
+  authFilePath: string;
+  authFileExists: boolean;
+  authFileParseable: boolean;
+  authStoredProviders: string[];
+  authFileModeOk: boolean;
+  authFileMode: number | null;
 }
 
 async function inspectState(): Promise<DoctorState> {
@@ -81,6 +89,27 @@ async function inspectState(): Promise<DoctorState> {
   const dbExists = existsSync(paths.db);
   const dbSizeMb = dbExists ? +(statSync(paths.db).size / 1e6).toFixed(2) : null;
 
+  const authFileExists = existsSync(paths.auth);
+  let authFileParseable = false;
+  let authStoredProviders: string[] = [];
+  let authFileMode: number | null = null;
+  let authFileModeOk = true;
+  if (authFileExists) {
+    try {
+      // Loading returns {} for empty/missing, throws for malformed — we only
+      // need presence of parseability here, not the credentials themselves.
+      loadAuth();
+      authFileParseable = true;
+      authStoredProviders = listStoredProviders();
+    } catch {
+      authFileParseable = false;
+    }
+    authFileMode = statSync(paths.auth).mode & 0o777;
+    // World-readable or group-readable credential files are a red flag on
+    // multi-user systems. 0600 is our contract.
+    authFileModeOk = authFileMode === 0o600;
+  }
+
   return {
     bunVersion,
     bunOk,
@@ -92,6 +121,12 @@ async function inspectState(): Promise<DoctorState> {
     dbFilePath: paths.db,
     dbExists,
     dbSizeMb,
+    authFilePath: paths.auth,
+    authFileExists,
+    authFileParseable,
+    authStoredProviders,
+    authFileModeOk,
+    authFileMode,
   };
 }
 
@@ -175,6 +210,23 @@ export function buildDiagnosis(
     });
   }
 
+  if (state.authFileExists && !state.authFileParseable) {
+    findings.push({
+      level: 'error',
+      message: `Credential store at ${state.authFilePath} is malformed (invalid JSON?)`,
+      action:
+        'Inspect the file manually — do not delete blindly, it holds saved API keys and OAuth tokens.',
+    });
+  }
+
+  if (state.authFileExists && !state.authFileModeOk && state.authFileMode !== null) {
+    findings.push({
+      level: 'warn',
+      message: `Credential store at ${state.authFilePath} has permissive mode ${state.authFileMode.toString(8)} (expected 600)`,
+      action: `chmod 600 ${state.authFilePath}`,
+    });
+  }
+
   if (findings.length === 0 || findings.every((f) => f.level === 'ok')) {
     findings.push({ level: 'ok', message: 'Everything looks healthy.' });
   }
@@ -209,6 +261,25 @@ function renderPretty(state: DoctorState, probes: ProviderProbe[], findings: Fin
       state.dbSizeMb !== null ? chalk.gray(` (${state.dbSizeMb} MB)`) : ''
     }`,
   );
+  // Credential store. We show presence + mode + provider count, never a
+  // token. A red cross on mode is the user's signal to chmod before the
+  // next save could leak a token to a local peer.
+  const authLabel = state.authFileExists
+    ? state.authFileParseable
+      ? `${state.authStoredProviders.length} provider${state.authStoredProviders.length === 1 ? '' : 's'} stored`
+      : 'malformed'
+    : '(none — no stored credentials)';
+  const authIcon = state.authFileExists
+    ? state.authFileParseable && state.authFileModeOk
+      ? chalk.green('✓')
+      : chalk.red('✗')
+    : chalk.gray('·');
+  out.push(
+    `  Auth:         ${authIcon} ${chalk.gray(state.authFilePath)} ${chalk.gray(`— ${authLabel}`)}`,
+  );
+  if (state.authStoredProviders.length > 0) {
+    out.push(`    providers:  ${chalk.white(state.authStoredProviders.join(', '))}`);
+  }
   out.push('');
 
   // Providers

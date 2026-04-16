@@ -31,6 +31,12 @@ function state(over: Partial<Parameters<typeof buildDiagnosis>[0]> = {}) {
     dbFilePath: '/home/test/.chronicle/worlds.db',
     dbExists: true,
     dbSizeMb: 1.2,
+    authFilePath: '/home/test/.chronicle/auth.json',
+    authFileExists: false,
+    authFileParseable: false,
+    authStoredProviders: [],
+    authFileModeOk: true,
+    authFileMode: null,
     ...over,
   };
 }
@@ -100,5 +106,50 @@ describe('buildDiagnosis', () => {
     expect(
       findings.some((f) => f.level === 'warn' && /defaultProvider\/defaultModel/.test(f.message)),
     ).toBe(true);
+  });
+
+  it('flags malformed auth.json as ERROR — never silently drop saved tokens', () => {
+    const findings = buildDiagnosis(
+      state({ authFileExists: true, authFileParseable: false, authFileMode: 0o600 }),
+      [probe({ id: 'lmstudio', kind: 'server', available: true })],
+      [probe({ id: 'lmstudio', kind: 'server', available: true })],
+    );
+    expect(findings.some((f) => f.level === 'error' && /Credential store/.test(f.message))).toBe(
+      true,
+    );
+  });
+
+  it('flags world-readable auth.json as WARN with chmod action', () => {
+    const findings = buildDiagnosis(
+      state({
+        authFileExists: true,
+        authFileParseable: true,
+        authFileModeOk: false,
+        authFileMode: 0o644,
+        authStoredProviders: ['anthropic'],
+      }),
+      [probe({ id: 'lmstudio', kind: 'server', available: true })],
+      [probe({ id: 'lmstudio', kind: 'server', available: true })],
+    );
+    const mode = findings.find((f) => /permissive mode/.test(f.message));
+    expect(mode?.level).toBe('warn');
+    expect(mode?.action).toMatch(/chmod 600/);
+  });
+
+  it('healthy auth.json with mode 0600 does not generate a finding', () => {
+    const findings = buildDiagnosis(
+      state({
+        authFileExists: true,
+        authFileParseable: true,
+        authFileModeOk: true,
+        authFileMode: 0o600,
+        authStoredProviders: ['anthropic', 'deepseek'],
+      }),
+      [probe({ id: 'lmstudio', kind: 'server', available: true })],
+      [probe({ id: 'lmstudio', kind: 'server', available: true })],
+    );
+    // Only the "ok" finding should be present; no credential warnings.
+    expect(findings.filter((f) => /Credential/.test(f.message))).toHaveLength(0);
+    expect(findings.filter((f) => /permissive mode/.test(f.message))).toHaveLength(0);
   });
 });
