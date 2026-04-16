@@ -21,7 +21,7 @@
     "@react-router/node": "^7",
     "@react-router/serve": "^7",
     "isbot": "^5",
-    "konva": "^9",
+    "konva": "^10",
     "react-konva": "^19",
     "framer-motion": "^11",
     "zustand": "^5"
