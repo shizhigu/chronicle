@@ -34,7 +34,8 @@ export async function configCommand(opts: Options): Promise<void> {
   console.log(JSON.stringify(redacted, null, 2));
 
   printNextSteps([
-    `mention "Set API key: chronicle config --set providers.anthropic.apiKey=sk-ant-..."`,
-    `mention "Set default model: chronicle config --set defaultModel=claude-haiku-4-5"`,
+    'mention "Set your default provider: chronicle config --set defaultProvider=<id>"',
+    'mention "Set your default model: chronicle config --set defaultModel=<modelId>"',
+    'mention "Run chronicle onboard to probe which providers are available on this machine."',
   ]);
 }

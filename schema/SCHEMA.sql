@@ -72,9 +72,12 @@ CREATE TABLE agents (
     -- agent runtime binding (pi-agent session + model selection)
     session_id TEXT,                         -- pi-agent session id for provider-side context caching
     session_state_blob BLOB,                 -- serialized pi-agent state (for resume)
-    model_tier TEXT NOT NULL DEFAULT 'haiku', -- haiku|sonnet|opus or custom
-    provider TEXT NOT NULL DEFAULT 'anthropic',
-    model_id TEXT NOT NULL DEFAULT 'claude-haiku-4-5',
+    -- tier is a neutral label (small/medium/large-ish). Callers fill it.
+    model_tier TEXT NOT NULL DEFAULT 'default',
+    -- provider + model_id are required at insert time — no brand default.
+    -- pi-agent accepts any provider/model pair; Chronicle doesn't privilege one.
+    provider TEXT NOT NULL,
+    model_id TEXT NOT NULL,
     thinking_level TEXT NOT NULL DEFAULT 'low', -- off|minimal|low|medium|high|xhigh
 
     -- lineage

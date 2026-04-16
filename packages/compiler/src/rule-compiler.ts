@@ -153,8 +153,17 @@ export class RuleCompiler {
 
   constructor(opts: RuleCompilerOpts = {}) {
     this.llm = opts.llm ?? createLlm();
-    this.provider = opts.provider ?? 'anthropic';
-    this.modelId = opts.modelId ?? 'claude-sonnet-4-6';
+    // If a custom Llm is injected (typically in tests), provider/modelId are
+    // ignored by the mock; use empty strings so we don't leak a brand bias
+    // into the default. In production, callers pass provider/modelId
+    // explicitly (see WorldCompiler + run.ts / dashboard.ts wiring).
+    this.provider = opts.provider ?? '';
+    this.modelId = opts.modelId ?? '';
+    if (!opts.llm && (!this.provider || !this.modelId)) {
+      throw new Error(
+        'RuleCompiler requires { provider, modelId } when using the default createLlm(). Pass them explicitly or inject a custom Llm.',
+      );
+    }
   }
 
   async compile(worldId: string, descriptions: string[]): Promise<Rule[]> {

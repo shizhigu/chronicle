@@ -51,8 +51,11 @@ program
   .description('Create a new world from a natural-language description')
   .requiredOption('--desc <text>', 'world description')
   .option('--name <name>', 'optional world name')
-  .option('--model <id>', 'default model id', 'claude-haiku-4-5')
-  .option('--provider <name>', 'default provider', 'anthropic')
+  // No defaults — read from ~/.chronicle/config.json if omitted. Passing these
+  // CLI flags overrides the config. Any pi-agent-supported provider + any
+  // model id that provider accepts are valid.
+  .option('--model <id>', 'model id (overrides config.defaultModel)')
+  .option('--provider <name>', 'provider id (overrides config.defaultProvider)')
   .action(createWorldCommand);
 
 program.command('list').description('List all chronicles on this machine').action(listCommand);

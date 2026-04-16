@@ -186,38 +186,40 @@ async function runTick(world: World) {
 
 ## Model Tiering Config
 
-Every character has its own model config — heterogeneous worlds are natural:
+Every character has its own model config — heterogeneous worlds are natural.
+No provider is privileged by Chronicle; these examples just show the shape.
 
 ```typescript
-// In world config (compiled from natural language)
+// Per-turn + heavier reflection model on the same provider
+// (any pi-agent-supported provider works — local or cloud)
 {
   id: "marcus",
   persona: "...",
-  provider: "anthropic",
-  modelId: "claude-haiku-4-5",        // routine actions
+  provider: "<your-provider>",        // e.g. lmstudio, anthropic, openai, etc.
+  modelId: "<fast-model>",            // routine actions
   reflectionModel: {
-    provider: "anthropic",
-    modelId: "claude-sonnet-4-6",     // deeper reflections every 20 ticks
+    provider: "<your-provider>",
+    modelId: "<stronger-model>",      // deeper reflections every 20 ticks
   },
   thinkingLevel: "low",
 }
 
-// A "wise elder" character might look like:
+// A "wise elder" character — always use the stronger tier:
 {
   id: "ancient_sage",
   persona: "...",
-  provider: "anthropic",
-  modelId: "claude-sonnet-4-6",
-  thinkingLevel: "medium",             // uses extended thinking
+  provider: "<your-provider>",
+  modelId: "<stronger-model>",
+  thinkingLevel: "medium",            // uses extended thinking if the model supports it
 }
 
-// Or free/local:
+// Fully local via LM Studio / Ollama / vLLM / etc. — zero-cost, zero-network:
 {
   id: "villager_01",
   persona: "...",
-  provider: "openai-compatible",
-  modelId: "qwen-2.5-72b",
-  baseUrl: "http://localhost:11434/v1", // local Ollama
+  provider: "lmstudio",
+  modelId: "google/gemma-3-e4b",      // or whatever model you've loaded
+  baseUrl: "http://localhost:1234/v1",
   thinkingLevel: "off",
 }
 ```

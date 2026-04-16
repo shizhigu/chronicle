@@ -57,9 +57,13 @@ export const agents = sqliteTable(
     tokensSpent: integer('tokens_spent').notNull().default(0),
     sessionId: text('session_id'),
     sessionStateBlob: blob('session_state_blob'),
-    modelTier: text('model_tier').notNull().default('haiku'),
-    provider: text('provider').notNull().default('anthropic'),
-    modelId: text('model_id').notNull().default('claude-haiku-4-5'),
+    // Tier is a generic label (small/medium/large-ish); callers fill it.
+    modelTier: text('model_tier').notNull().default('default'),
+    // Provider + modelId are provided by the caller at insert time — no
+    // brand default. We require them at the Drizzle type level so missing
+    // values fail fast rather than quietly landing on a hardcoded brand.
+    provider: text('provider').notNull(),
+    modelId: text('model_id').notNull(),
     thinkingLevel: text('thinking_level').notNull().default('low'),
     birthTick: integer('birth_tick').notNull().default(0),
     deathTick: integer('death_tick'),

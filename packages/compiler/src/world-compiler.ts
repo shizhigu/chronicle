@@ -113,8 +113,16 @@ export class WorldCompiler {
 
   constructor(opts: WorldCompilerOpts = {}) {
     this.llm = opts.llm ?? createLlm();
-    this.provider = opts.provider ?? 'anthropic';
-    this.modelId = opts.modelId ?? 'claude-sonnet-4-6';
+    // Same policy as RuleCompiler: when a custom Llm is injected (tests), the
+    // provider/modelId strings are irrelevant to the mock. When using the
+    // default createLlm() in production, callers MUST pass provider+modelId.
+    this.provider = opts.provider ?? '';
+    this.modelId = opts.modelId ?? '';
+    if (!opts.llm && (!this.provider || !this.modelId)) {
+      throw new Error(
+        'WorldCompiler requires { provider, modelId } when using the default createLlm(). Pass them explicitly or inject a custom Llm.',
+      );
+    }
     this.ruleCompiler = new RuleCompiler({
       provider: this.provider,
       modelId: this.modelId,
