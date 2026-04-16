@@ -139,7 +139,14 @@ export function classifyError(err: unknown): ClassifiedError {
   ) {
     return { kind: 'context_overflow', message, retryable: false, cause: err };
   }
-  if (/\bmodel not found\b|\bunknown model\b|\binvalid model\b/.test(lower)) {
+  if (
+    /\bmodel not found\b|\bunknown model\b|\binvalid model\b/.test(lower) ||
+    // LM Studio / Ollama / local servers when no model is loaded into
+    // memory: the endpoint is reachable but has nothing to serve.
+    // Retrying won't help — the user (or an out-of-band `lms load`)
+    // needs to load a model first.
+    /\bno models? loaded\b|\bmodel .*not loaded\b|\bno model loaded\b/.test(lower)
+  ) {
     return { kind: 'not_found', message, retryable: false, cause: err };
   }
   if (/\bbad request\b|\binvalid request\b|\bmalformed\b/.test(lower)) {

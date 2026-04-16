@@ -106,6 +106,22 @@ describe('classifyError — message substrings', () => {
     expect(classifyError(new Error('payload too large')).kind).toBe('context_overflow');
   });
 
+  it('matches LM Studio / local-server "no model loaded" as not_found (not retryable)', () => {
+    // LM Studio returns this 400 body when the user has the REST
+    // server on but no model loaded (auto-unloaded via TTL, etc.).
+    // Without classifying this as not_found, pi-agent's retry loop
+    // eats context-window-fulls of identical failures.
+    for (const msg of [
+      'No models loaded. Please load a model in the developer page.',
+      'No model loaded',
+      'model gemma-3-27b not loaded',
+    ]) {
+      const c = classifyError(new Error(msg));
+      expect(c.kind).toBe('not_found');
+      expect(c.retryable).toBe(false);
+    }
+  });
+
   it('unknown falls through with retryable=true', () => {
     const c = classifyError(new Error('something weird happened'));
     expect(c.kind).toBe('unknown');
