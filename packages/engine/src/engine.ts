@@ -196,7 +196,13 @@ export class Engine {
       untilUnsubscribe?.();
       this.running = false;
       await this.persistWorldState();
-      await this.store.updateWorldStatus(this.world.id, this.paused ? 'paused' : 'ended');
+      // Finished naturally (reached maxTick / untilEvent tripped /
+      // paused): world is resumable, mark `paused`. A world only
+      // transitions to `ended` when the user or engine explicitly
+      // terminates (shutdown()). Previously EVERY `chronicle run`
+      // ended its world, forcing users to hand-update the status
+      // column before running more ticks — broken by default.
+      await this.store.updateWorldStatus(this.world.id, 'paused');
     }
   }
 
