@@ -14,7 +14,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { agentId, locationId, worldId } from '@chronicle/core';
 import type { Agent, Observation, ProposedAction, TurnResult, World } from '@chronicle/core';
-import { type AgentRuntimeAdapter, type BusEvent, Engine, WorldStore } from '../src/index.js';
+import {
+  type AgentRuntimeAdapter,
+  type BusEvent,
+  Engine,
+  EventBus,
+  WorldStore,
+} from '../src/index.js';
 
 // ============================================================
 // Mock runtime — deterministic, no LLM
@@ -292,6 +298,88 @@ describe('Engine — shared-store tick loop (authoritative)', () => {
       await Bun.file(tmpPath)
         .exists()
         .then((exists) => exists && require('node:fs').unlinkSync(tmpPath));
+    } catch {
+      /* ignore */
+    }
+  });
+
+  it('reuses the caller-provided EventBus so agent-side and engine-side events land on the same stream', async () => {
+    // Regression: Engine.init() used to unconditionally `new EventBus()`,
+    // so a runtime (AgentPool) constructed with the caller's bus would
+    // emit `action_completed` / `speech` / `char_thinking` on a
+    // different bus than Engine's `tick_begin` / `tick_end`. The
+    // `--live` subscriber and the WebSocket bridge both listen on
+    // `engine.bus`, so half the stream went to /dev/null.
+    const tmpPath = `/tmp/chronicle-smoke-sharedbus-${Date.now()}.db`;
+    const store = await WorldStore.open(tmpPath);
+    const world = makeWorld(worldId());
+    await store.createWorld(world);
+    const alice = makeAgent(world.id, 'Alice', null);
+    await store.createAgent(alice);
+    store.close();
+
+    const sharedBus = new EventBus();
+    const collected: BusEvent[] = [];
+    sharedBus.subscribe((e) => collected.push(e));
+
+    const runtime = new MockRuntime();
+    const engine = new Engine({
+      dbPath: tmpPath,
+      worldId: world.id,
+      runtime,
+      events: sharedBus,
+    });
+    await engine.init();
+
+    // Simulate the AgentPool emitting on the shared bus from inside a
+    // tool-call callback (the real pi-agent `afterToolCall` path).
+    engine.bus.emit({
+      type: 'action_completed',
+      worldId: world.id,
+      agentId: alice.id,
+      tool: 'speak',
+      isError: false,
+    });
+
+    await engine.run({ ticks: 1 });
+    await engine.shutdown();
+
+    // `engine.bus` must be the same instance we passed in.
+    expect(engine.bus).toBe(sharedBus);
+
+    // Both the out-of-engine emission and the engine's own emissions
+    // must reach the external subscriber.
+    const kinds = collected.map((e) => e.type);
+    expect(kinds).toContain('action_completed');
+    expect(kinds).toContain('tick_begin');
+    expect(kinds).toContain('tick_end');
+
+    try {
+      require('node:fs').unlinkSync(tmpPath);
+    } catch {
+      /* ignore */
+    }
+  });
+
+  it('allocates its own bus when no `events` is passed (backward compat)', async () => {
+    const tmpPath = `/tmp/chronicle-smoke-defaultbus-${Date.now()}.db`;
+    const store = await WorldStore.open(tmpPath);
+    const world = makeWorld(worldId());
+    await store.createWorld(world);
+    store.close();
+
+    const engine = new Engine({
+      dbPath: tmpPath,
+      worldId: world.id,
+      runtime: new MockRuntime(),
+      // deliberately no `events`
+    });
+    await engine.init();
+    expect(engine.bus).toBeDefined();
+    await engine.shutdown();
+
+    try {
+      require('node:fs').unlinkSync(tmpPath);
     } catch {
       /* ignore */
     }

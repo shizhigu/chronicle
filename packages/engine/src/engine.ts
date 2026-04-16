@@ -59,6 +59,19 @@ export interface EngineOptions {
    * a stub that returns a fixed decision per agent.
    */
   activation?: AgentActivation;
+  /**
+   * Shared event bus. If the runtime (AgentPool) was constructed with
+   * its own EventBus for agent-side emissions (`action_completed`,
+   * `speech`, `char_thinking`), that SAME bus MUST be passed here or
+   * the Engine's own emissions (`tick_begin`, `tick_end`,
+   * `god_intervention_applied`) land on a different bus than the
+   * runtime's — subscribers see only half the event stream.
+   *
+   * Optional: if omitted, Engine allocates its own bus. Callers who
+   * don't subscribe from outside (e.g. pure in-process runs) can
+   * safely ignore this.
+   */
+  events?: EventBus;
 }
 
 export class Engine {
@@ -87,7 +100,12 @@ export class Engine {
     this.store = await WorldStore.open(this.opts.dbPath);
     this.world = await this.store.loadWorld(this.opts.worldId);
 
-    this.events = new EventBus();
+    // Reuse the caller's bus when provided (typical for CLI + dashboard
+    // which also give it to the AgentPool). Without this, agent-side
+    // emissions (action_completed, speech) and engine-side emissions
+    // (tick_begin, tick_end, god_intervention_applied) land on
+    // disjoint buses — half the stream vanishes silently.
+    this.events = this.opts.events ?? new EventBus();
     if (this.opts.onEvent) this.events.subscribe(this.opts.onEvent);
 
     this.ruleEnforcer = new RuleEnforcer(this.store, this.world);

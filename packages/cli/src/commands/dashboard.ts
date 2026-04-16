@@ -41,6 +41,9 @@ export async function dashboardCommand(worldId: string, opts: Options): Promise<
     dbPath: paths.db,
     worldId,
     runtime,
+    // Shared bus — so AgentPool (agent-side events) and Engine
+    // (tick-level events) both land on the WebSocket bridge below.
+    events,
     reflectionModel: (() => {
       const r = resolveReflectionModel(config);
       return { provider: r.provider, modelId: r.modelId };

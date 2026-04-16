@@ -43,6 +43,10 @@ export async function runCommand(worldId: string, opts: Options): Promise<void> 
     dbPath: paths.db,
     worldId,
     runtime,
+    // Share the bus so AgentPool's action_completed / speech /
+    // char_thinking events land on the same stream as Engine's
+    // tick_begin / tick_end / god_intervention_applied.
+    events,
     reflectionModel: { provider: reflection.provider, modelId: reflection.modelId },
   });
   try {
