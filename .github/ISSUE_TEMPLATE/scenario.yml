@@ -1,0 +1,73 @@
+name: Scenario contribution / feedback
+description: Propose a new example scenario or report issues with an existing one
+title: 'scenario: '
+labels: ['scenario', 'content']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        New scenarios are one of the highest-value contributions. See [`docs/SCENARIO_DESIGN.md`](../../docs/SCENARIO_DESIGN.md) for the design principles.
+
+  - type: input
+    id: scenario-name
+    attributes:
+      label: Scenario name
+      placeholder: medieval-tavern
+    validations:
+      required: true
+
+  - type: textarea
+    id: premise
+    attributes:
+      label: One-line premise
+      placeholder: A tavern keeper tries to turn a profit while a mysterious stranger stirs up trouble among the patrons.
+    validations:
+      required: true
+
+  - type: textarea
+    id: nl-description
+    attributes:
+      label: Natural-language description
+      description: The full description you would paste into `chronicle create-world --desc`.
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: drama-hooks
+    attributes:
+      label: Expected drama hooks
+      description: What kinds of conflicts or surprises should emerge?
+
+  - type: textarea
+    id: test-runs
+    attributes:
+      label: Test-run observations (optional)
+      description: If you have already run this, include highlights. Five seeds × 100 ticks is the usual bar.
+
+  - type: dropdown
+    id: submission-type
+    attributes:
+      label: Submission type
+      options:
+        - Proposal (I want feedback before I implement)
+        - Finished (I have a PR ready or will open one soon)
+        - Feedback on existing scenario (link below)
+    validations:
+      required: true
+
+  - type: input
+    id: related-scenario
+    attributes:
+      label: Related scenario (if feedback)
+      placeholder: examples/desert-island.chronicle.md
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Confirmations
+      options:
+        - label: I read `docs/SCENARIO_DESIGN.md`
+          required: true
+        - label: The scenario avoids real-person defamation and slurs
+          required: true

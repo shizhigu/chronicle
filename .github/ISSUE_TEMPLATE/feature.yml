@@ -1,0 +1,66 @@
+name: Feature request
+description: Suggest a new feature, enhancement, or API
+title: 'feat: '
+labels: ['enhancement', 'triage']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For large features, please open a [Discussion](https://github.com/chronicle-sh/chronicle/discussions) first so we can align on scope before you start work.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Start from the user pain, not from the proposed solution.
+      placeholder: When running long simulations, I can't easily inspect which agent sent which message because …
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: One paragraph describing what you'd like to see. A sketch, not a final spec.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What other approaches did you think about, and why are they worse?
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area does this touch?
+      multiple: true
+      options:
+        - core (types, primitives)
+        - engine (tick loop, rule enforcement)
+        - runtime (agent pool, pi-agent integration)
+        - compiler (natural language → world/rules)
+        - cli
+        - dashboard (UI)
+        - docs
+        - build / tooling
+        - other
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope considerations
+      description: Is this a breaking change? Does it add a new dependency? Does it affect cost / performance?
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Confirmations
+      options:
+        - label: I searched existing issues and discussions
+          required: true
+        - label: I would be willing to help implement this
+          required: false

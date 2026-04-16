@@ -1,0 +1,108 @@
+name: Bug report
+description: Something is broken in Chronicle
+title: 'bug: '
+labels: ['bug', 'triage']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. Before submitting, please search existing issues to avoid duplicates.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug. Include exact error messages if any.
+      placeholder: When I run `chronicle run my-world`, it crashes with …
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Minimum steps a maintainer can follow to see the bug.
+      placeholder: |
+        1. `chronicle create-world --desc "dinner party"`
+        2. `chronicle run dinner-party`
+        3. See error after tick 3
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: input
+    id: chronicle-version
+    attributes:
+      label: Chronicle version
+      description: Output of `chronicle --version`
+      placeholder: 0.1.0-alpha.5
+    validations:
+      required: true
+
+  - type: input
+    id: bun-version
+    attributes:
+      label: Bun version
+      description: Output of `bun --version`
+      placeholder: 1.1.40
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Windows (WSL)
+        - Windows (native)
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: llm-provider
+    attributes:
+      label: LLM provider
+      description: Which provider were you using when the bug appeared?
+      multiple: true
+      options:
+        - Anthropic
+        - OpenAI
+        - Google
+        - LM Studio / local
+        - Other
+        - Not applicable
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste any stack traces, CLI output, or dashboard console errors. Use a code block.
+      render: shell
+
+  - type: textarea
+    id: scenario
+    attributes:
+      label: Scenario (if relevant)
+      description: If the bug is scenario-specific, paste the natural-language description you used. Redact any API keys.
+      render: markdown
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Confirmations
+      options:
+        - label: I searched existing issues and did not find a duplicate
+          required: true
+        - label: I am on the latest `0.1.x` release or on `main`
+          required: false
+        - label: I am willing to help test a fix (maintainers may request follow-up)
+          required: false

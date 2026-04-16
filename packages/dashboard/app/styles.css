@@ -1,0 +1,20 @@
+@import "tailwindcss";
+
+@theme {
+  --color-abyss: #0a0a0c;
+  --color-cream: #f5efdc;
+  --color-gold: #c9a24b;
+  --color-blood: #8b2d1f;
+
+  --font-display: "Bebas Neue", "Inter", sans-serif;
+  --font-body: "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+html,
+body {
+  height: 100%;
+}
+body {
+  font-family: var(--font-body);
+}

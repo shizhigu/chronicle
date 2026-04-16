@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Ask a question on Discussions
+    url: https://github.com/chronicle-sh/chronicle/discussions
+    about: For open-ended questions, design ideas, or usage help — please use Discussions, not Issues.
+  - name: Community chat (Discord)
+    url: https://chronicle.sh/discord
+    about: Real-time help, showcases, and general chat.
+  - name: Report a security vulnerability
+    url: https://github.com/chronicle-sh/chronicle/security/advisories/new
+    about: Security issues must be reported privately — do not open a public issue.

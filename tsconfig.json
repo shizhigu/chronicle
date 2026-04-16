@@ -1,0 +1,21 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "resolveJsonModule": true
+  },
+  "include": [
+    "packages/core/src/**/*",
+    "packages/core/test/**/*",
+    "packages/engine/src/**/*",
+    "packages/engine/test/**/*",
+    "packages/runtime/src/**/*",
+    "packages/runtime/test/**/*",
+    "packages/compiler/src/**/*",
+    "packages/compiler/test/**/*",
+    "packages/cli/src/**/*",
+    "packages/cli/test/**/*"
+  ],
+  "exclude": ["node_modules", "packages/*/dist", "packages/*/build", "packages/dashboard"]
+}

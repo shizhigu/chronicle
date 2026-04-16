@@ -1,0 +1,36 @@
+# lefthook.yml — git hooks config
+# Install: bun run prepare
+# Run: lefthook run pre-commit
+#
+# Works with Bun's package manager (no husky/lint-staged needed).
+
+pre-commit:
+  parallel: true
+  commands:
+    lint:
+      glob: "*.{ts,tsx,js,jsx,json}"
+      run: bun x biome check --write --no-errors-on-unmatched --files-ignore-unknown=true {staged_files} && git add {staged_files}
+    typecheck:
+      run: bun run typecheck
+      only:
+        ref: master
+
+commit-msg:
+  commands:
+    conventional:
+      run: |
+        # Enforce Conventional Commits format
+        # https://www.conventionalcommits.org/
+        regex='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\(.+\))?!?: .+'
+        if ! grep -qE "$regex" {1}; then
+          echo "❌ Commit message must follow Conventional Commits format:"
+          echo "   <type>(<scope>)!: <subject>"
+          echo "   Types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert"
+          echo "   Example: feat(engine): add reflection cycle"
+          exit 1
+        fi
+
+pre-push:
+  commands:
+    test:
+      run: bun test

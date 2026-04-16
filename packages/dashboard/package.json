@@ -1,0 +1,45 @@
+{
+  "name": "@chronicle/dashboard",
+  "version": "0.1.0-alpha",
+  "description": "Chronicle dashboard — React Router v7 live rendering UI",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "bun x react-router dev",
+    "build": "bun x react-router build",
+    "start": "bun x react-router-serve ./build/server/index.js",
+    "typecheck": "bun x react-router typegen && bun x tsc --noEmit",
+    "test": "bun test",
+    "test:watch": "bun test --watch"
+  },
+  "dependencies": {
+    "@chronicle/core": "workspace:*",
+    "@chronicle/engine": "workspace:*",
+    "react": "^19",
+    "react-dom": "^19",
+    "react-router": "^7",
+    "@react-router/node": "^7",
+    "@react-router/serve": "^7",
+    "isbot": "^5",
+    "konva": "^9",
+    "react-konva": "^19",
+    "framer-motion": "^11",
+    "zustand": "^5"
+  },
+  "devDependencies": {
+    "@react-router/dev": "^7",
+    "@types/bun": "^1.1",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "autoprefixer": "^10",
+    "postcss": "^8",
+    "tailwindcss": "^4",
+    "typescript": "^5.6",
+    "vite": "^6",
+    "vite-tsconfig-paths": "^5"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "license": "MIT"
+}

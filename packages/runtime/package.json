@@ -1,0 +1,49 @@
+{
+  "name": "@chronicle/runtime",
+  "version": "0.1.0-alpha",
+  "description": "Chronicle agent runtime — pi-agent pool and character lifecycle",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "src"],
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --target bun --format esm --sourcemap=external --external @chronicle/core --external @chronicle/engine && bun x tsc -p tsconfig.build.json --emitDeclarationOnly",
+    "dev": "bun build src/index.ts --outdir dist --target bun --format esm --watch --external @chronicle/core --external @chronicle/engine",
+    "typecheck": "bun x tsc --noEmit",
+    "test": "bun test",
+    "test:watch": "bun test --watch",
+    "test:coverage": "bun test --coverage"
+  },
+  "dependencies": {
+    "@chronicle/core": "workspace:*",
+    "@chronicle/engine": "workspace:*",
+    "@mariozechner/pi-agent-core": "^0",
+    "@mariozechner/pi-ai": "^0",
+    "zod": "^3"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1",
+    "typescript": "^5.6"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chronicle-sh/chronicle.git",
+    "directory": "packages/runtime"
+  },
+  "keywords": ["chronicle", "agent", "llm", "pi-agent", "runtime"],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

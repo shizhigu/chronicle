@@ -1,0 +1,35 @@
+# Chronicle CODEOWNERS
+#
+# These owners will be the default reviewers for everything in the repo.
+# Order matters — later matches take precedence.
+
+* @chronicle-sh/maintainers
+
+# Core type system — deliberate, slow-changing.
+/packages/core/ @chronicle-sh/core-team
+
+# Engine + rule enforcement — correctness-critical.
+/packages/engine/ @chronicle-sh/core-team
+
+# Agent runtime — LLM integration surface.
+/packages/runtime/ @chronicle-sh/runtime-team
+
+# Compiler — natural-language parsing quality is subjective.
+/packages/compiler/ @chronicle-sh/compiler-team
+
+# CLI — user-facing, needs UX review.
+/packages/cli/ @chronicle-sh/maintainers
+
+# Dashboard — design-sensitive.
+/packages/dashboard/ @chronicle-sh/frontend-team
+
+# Docs + governance — everyone reviews.
+/docs/ @chronicle-sh/maintainers
+/CODE_OF_CONDUCT.md @chronicle-sh/maintainers
+/SECURITY.md @chronicle-sh/maintainers
+/CONTRIBUTING.md @chronicle-sh/maintainers
+
+# CI / release pipeline — infra team only.
+/.github/ @chronicle-sh/infra
+/lefthook.yml @chronicle-sh/infra
+/biome.json @chronicle-sh/infra
