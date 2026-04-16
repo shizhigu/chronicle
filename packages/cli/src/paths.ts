@@ -28,6 +28,13 @@ export const paths = {
   get config(): string {
     return join(getRoot(), 'config.json');
   },
+  /**
+   * Credential store — api keys and OAuth tokens. File mode 0600.
+   * Managed by `auth-storage.ts`; never mix non-credential data in here.
+   */
+  get auth(): string {
+    return join(getRoot(), 'auth.json');
+  },
   get logs(): string {
     return join(getRoot(), 'logs');
   },
