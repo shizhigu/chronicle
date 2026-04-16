@@ -166,20 +166,15 @@ function corePass(): AgentTool<{ reason?: string }> {
     parametersSchema: z.object({
       reason: z.string().max(500).optional(),
     }),
-    execute: async ({ reason }, ctx) => {
-      // Record directly at the tool layer rather than relying on the
-      // runtime adapter to shape a `ProposedAction` with actionName:
-      // 'pass' — the engine's standard action-event path fires only
-      // when the adapter returns an action, and we want the pass to
-      // be audit-visible regardless of adapter shape (ADR-0010).
-      await ctx.store.recordEvent({
-        worldId: ctx.world.id,
-        tick: ctx.tick,
-        eventType: 'action',
-        actorId: ctx.character.id,
-        data: { action: 'pass', reason: reason ?? null },
-        tokenCost: 0,
-      });
+    execute: async () => {
+      // The engine's standard action-event path records this turn via
+      // `extractPrimaryToolCall` → `recordEvent('action', …)`. We used
+      // to self-record here too because the adapter's action-extraction
+      // was broken (it only scanned the last assistant message); that
+      // path now works, so writing the same event twice produces a
+      // duplicate pass row per tick. The caller's `reason` travels
+      // through the engine's recorded args — no need to echo it into
+      // the detail string.
       return { ok: true, detail: 'passed' };
     },
   };
