@@ -25,6 +25,12 @@ bun test
 
 # Watch mode for dev
 bun test --watch
+
+# Optional: enable live LLM integration tests (costs a fraction of a cent).
+# Uses OpenRouter's deepseek/deepseek-v3.2 with hard token caps + temp=0.
+# Tests auto-skip when the env var is unset, so the default dev flow is free.
+export OPENROUTER_API_KEY=sk-or-...
+bun test packages/compiler/test/integration
 ```
 
 ---

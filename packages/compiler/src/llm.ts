@@ -6,9 +6,6 @@
  * returning structured JSON.
  */
 
-// Real impl would import from pi-ai. We define a tiny adapter interface here
-// so compiler tests can mock without needing network.
-
 export interface LlmCallOpts {
   provider: string;
   modelId: string;
@@ -31,22 +28,40 @@ export function createLlm(): Llm {
   return {
     async call(opts: LlmCallOpts): Promise<string> {
       // Dynamic import to keep compiler loadable even if pi-ai isn't installed
-      // (e.g., in pure-unit-test contexts)
+      // (e.g., in pure-unit-test contexts).
       const mod = await import('@mariozechner/pi-ai').catch(() => null);
       if (!mod) {
         throw new Error('@mariozechner/pi-ai is not installed. Install it or inject a mock Llm.');
       }
-      // pi-ai's actual API: getModel(provider, id) → model with .complete()
-      // This is aligned to what we saw in the pi-mono README.
-      const model = (mod as any).getModel(opts.provider, opts.modelId);
-      const result = await model.complete({
-        system: opts.system,
-        messages: [{ role: 'user', content: opts.user }],
+
+      // pi-ai's real API: `getModel(provider, id)` returns a Model config,
+      // and `complete(model, context, options)` is a top-level function.
+      // We loosen types at this boundary because pi-ai's generics are
+      // parameterized over a model literal we don't carry through.
+      const anyMod = mod as any;
+      const model = anyMod.getModel(opts.provider, opts.modelId);
+
+      const context = {
+        systemPrompt: opts.system,
+        messages: [{ role: 'user' as const, content: opts.user }],
+      };
+
+      const result = await anyMod.complete(model, context, {
         temperature: opts.temperature ?? 0.5,
         maxTokens: opts.maxTokens ?? 4096,
-        responseFormat: opts.jsonMode ? { type: 'json_object' } : undefined,
       });
-      return typeof result === 'string' ? result : (result.content ?? '');
+
+      // Extract the text payload from the AssistantMessage content blocks.
+      if (typeof result === 'string') return result;
+      const content = result?.content;
+      if (Array.isArray(content)) {
+        return content
+          .filter((c: { type?: string }) => c?.type === 'text')
+          .map((c: { text?: string }) => c.text ?? '')
+          .join('\n');
+      }
+      if (typeof content === 'string') return content;
+      return '';
     },
   };
 }
