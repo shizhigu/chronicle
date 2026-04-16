@@ -224,10 +224,11 @@ export class Engine {
       });
     }
 
-    // Apply god interventions scheduled for this tick
+    // Apply god interventions scheduled for this tick. Pass `nextTick`
+    // explicitly — `world.currentTick` hasn't been advanced yet here.
     const interventions = await this.god.getQueuedFor(this.world.id, nextTick);
     for (const iv of interventions) {
-      await this.god.applyEffects(this.world, iv);
+      await this.god.applyEffects(this.world, iv, nextTick);
       await this.god.markApplied(iv.id);
       this.events.emit({
         type: 'god_intervention_applied',

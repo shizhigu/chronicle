@@ -33,12 +33,19 @@ export class GodService {
     return this.store.getPendingInterventions(worldId, tick);
   }
 
-  async applyEffects(world: World, iv: GodIntervention): Promise<void> {
+  /**
+   * Apply an intervention. `tick` is the in-progress tick (usually `nextTick`
+   * from the engine's tick loop, because `world.currentTick` hasn't been
+   * advanced yet when interventions run). Callers without an explicit tick
+   * fall back to `world.currentTick`.
+   */
+  async applyEffects(world: World, iv: GodIntervention, tick?: number): Promise<void> {
+    const effectiveTick = tick ?? world.currentTick;
     const agents = await this.store.getLiveAgents(world.id);
     const visibleTo = agents.map((a) => a.id);
     await this.store.recordEvent({
       worldId: world.id,
-      tick: world.currentTick,
+      tick: effectiveTick,
       eventType: 'god_intervention',
       actorId: null,
       data: { description: iv.description, compiled: iv.compiledEffects },
