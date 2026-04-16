@@ -157,6 +157,24 @@ export class AgentPool implements AgentRuntimeAdapter {
       };
     }
 
+    // Strip hallucinated tool-call round-trips before the transcript
+    // is re-used for the next turn. Some local models (Gemma-4 in
+    // particular) emit a templated chat completion that contains
+    // *their own* synthetic toolCall + toolResult pairs with names
+    // like "Observe the King" or "Seek Counsel in Private". Pi-agent's
+    // transport deserialises these into real transcript messages,
+    // and on the NEXT prompt() the model sees its own fabrication
+    // and compounds it. Remove any toolCall block whose name isn't
+    // in our allow-list, plus the corresponding toolResult message.
+    const validNames = new Set<string>(
+      ((instance.state?.tools ?? []) as Array<{ name: string }>).map((t) => t.name),
+    );
+    stripHallucinatedToolCalls(
+      instance.state?.messages as any[] | undefined,
+      messagesBefore,
+      validNames,
+    );
+
     // Extract the "primary" tool call from this turn's messages.
     // pi-agent's prompt() may iterate multiple rounds; the LAST
     // assistant message is often an empty-arg retry after a
@@ -323,20 +341,27 @@ export class AgentPool implements AgentRuntimeAdapter {
         args: unknown;
         isError: boolean;
       }) => {
+        // Some local models fabricate toolCall names that aren't in
+        // the registered tools list (Gemma-4 is a repeat offender:
+        // "Observe the King", "Seek Counsel in Private"). Pi-agent
+        // still fires afterToolCall for these — the fake toolResult
+        // is already in the stream — so we'd otherwise surface them
+        // on the bus as successful actions. Mark them as errors so
+        // the UI + CLI render them as ✗, and short-circuit the
+        // speech path so a hallucinated "speak" with a made-up name
+        // can't leak content into the event log.
+        const effectiveIsError = isError || !toolNames.has(toolCall.name);
         this.opts.events.emit({
           type: 'action_completed',
           worldId: this.world.id,
           agentId: character.id,
           tool: toolCall.name,
-          isError,
+          isError: effectiveIsError,
         });
         // Also surface `speak` as a rich `speech` bus event so the
         // CLI --live output and any other single-process subscriber
-        // see the content/to/tone. The DbEventRelay does the same
-        // split for cross-process delivery; emitting here means the
-        // run-subscriber in the same process also benefits without
-        // having to round-trip through the DB.
-        if (toolCall.name === 'speak' && !isError) {
+        // see the content/to/tone.
+        if (toolCall.name === 'speak' && !effectiveIsError) {
           const a = (args ?? {}) as { to?: string; content?: string; tone?: string | null };
           if (typeof a.content === 'string' && a.content.length > 0) {
             this.opts.events.emit({
@@ -539,6 +564,57 @@ Take exactly ONE action. Call a tool.`.trim();
  * call appeared anywhere in the turn — that path feeds into the
  * engine's `agent_silent` tracer.
  */
+/**
+ * Remove hallucinated tool-call round-trips from the pi-agent transcript
+ * in place. Scoped to messages added during the current turn (from
+ * `turnStart` onward) so we don't rewrite locked-in history from
+ * prior turns.
+ *
+ * An assistant message may carry [text, toolCall, text, toolCall]
+ * blocks. Drop any toolCall block whose name isn't in `valid`. If the
+ * drop leaves the assistant content empty, drop the whole assistant
+ * message. Also drop any toolResult message whose toolCallId refers
+ * to a removed toolCall.
+ */
+function stripHallucinatedToolCalls(
+  messages: any[] | undefined,
+  turnStart: number,
+  valid: Set<string>,
+): void {
+  if (!messages) return;
+  const droppedIds = new Set<string>();
+
+  // First pass: rewrite assistant messages in the turn window.
+  for (let i = turnStart; i < messages.length; i++) {
+    const m = messages[i];
+    if (m?.role !== 'assistant' || !Array.isArray(m.content)) continue;
+    const kept: any[] = [];
+    for (const block of m.content) {
+      if (block?.type === 'toolCall' && typeof block.name === 'string' && !valid.has(block.name)) {
+        if (typeof block.id === 'string') droppedIds.add(block.id);
+        continue;
+      }
+      kept.push(block);
+    }
+    m.content = kept;
+  }
+
+  // Second pass: drop toolResult messages that referenced a removed
+  // toolCall, plus assistant messages that are now empty (no text +
+  // no surviving toolCall).
+  for (let i = messages.length - 1; i >= turnStart; i--) {
+    const m = messages[i];
+    if (!m) continue;
+    if (m.role === 'toolResult' && droppedIds.has(m.toolCallId)) {
+      messages.splice(i, 1);
+      continue;
+    }
+    if (m.role === 'assistant' && Array.isArray(m.content) && m.content.length === 0) {
+      messages.splice(i, 1);
+    }
+  }
+}
+
 function extractPrimaryToolCall(turnMessages: any[], actorId: string): ProposedAction | null {
   let lastAny: ProposedAction | null = null;
   let lastWithArgs: ProposedAction | null = null;
