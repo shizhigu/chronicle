@@ -338,6 +338,47 @@ describe('Engine — shared-store tick loop (authoritative)', () => {
     }
   });
 
+  it('untilEvent: stops as soon as the named event type fires', async () => {
+    const tmpPath = `/tmp/chronicle-smoke-until-${Date.now()}.db`;
+    const store = await WorldStore.open(tmpPath);
+    const world = makeWorld(worldId());
+    await store.createWorld(world);
+    const a = makeAgent(world.id, 'Alice', null);
+    await store.createAgent(a);
+
+    // Queue an intervention for tick 2 — will fire god_intervention_applied
+    const { GodService } = await import('../src/index.js');
+    await new GodService(store).queue(world, 'A stranger arrives.', 2);
+    store.close();
+
+    const runtime = new MockRuntime();
+    const events: BusEvent[] = [];
+    const engine = new Engine({
+      dbPath: tmpPath,
+      worldId: world.id,
+      runtime,
+      onEvent: (e) => {
+        events.push(e);
+      },
+    });
+    await engine.init();
+    // Request 20 ticks, but stop as soon as god_intervention_applied fires.
+    await engine.run({ ticks: 20, untilEvent: 'god_intervention_applied' });
+    await engine.shutdown();
+
+    // Only 2 tick_end events (tick 1 and tick 2) — we stopped at 2
+    const tickEnds = events.filter((e) => e.type === 'tick_end');
+    expect(tickEnds.length).toBe(2);
+    const godEvt = events.find((e) => e.type === 'god_intervention_applied');
+    expect(godEvt).toBeTruthy();
+
+    try {
+      require('node:fs').unlinkSync(tmpPath);
+    } catch {
+      /* ignore */
+    }
+  });
+
   it('stops at a budget', async () => {
     const tmpPath = `/tmp/chronicle-smoke-budget-${Date.now()}.db`;
     const store = await WorldStore.open(tmpPath);

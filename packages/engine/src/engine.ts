@@ -112,6 +112,22 @@ export class Engine {
 
     await this.store.updateWorldStatus(this.world.id, 'running');
 
+    // Wire up untilEvent: if the caller requested "run until an event of type X",
+    // subscribe to the bus and stop the loop on the next matching emit. The
+    // subscription is torn down when the run finishes so subsequent runs
+    // aren't affected.
+    let untilUnsubscribe: (() => void) | undefined;
+    let untilTripped = false;
+    if (runOpts.untilEvent) {
+      const target = runOpts.untilEvent;
+      untilUnsubscribe = this.events.subscribe((event) => {
+        if (event.type === target) {
+          untilTripped = true;
+          this.running = false;
+        }
+      });
+    }
+
     try {
       while (this.running && this.world.currentTick < maxTick) {
         if (this.paused) {
@@ -120,6 +136,8 @@ export class Engine {
         }
 
         await this.runSingleTick();
+
+        if (untilTripped) break;
 
         if (runOpts.budget && this.world.tokensUsed >= runOpts.budget) {
           this.events.emit({ type: 'budget_exceeded', worldId: this.world.id });
@@ -132,6 +150,7 @@ export class Engine {
         }
       }
     } finally {
+      untilUnsubscribe?.();
       this.running = false;
       await this.persistWorldState();
       await this.store.updateWorldStatus(this.world.id, this.paused ? 'paused' : 'ended');
