@@ -25,6 +25,7 @@ import { Command } from 'commander';
 import { configCommand } from './commands/config.js';
 import { createWorldCommand } from './commands/create-world.js';
 import { dashboardCommand } from './commands/dashboard.js';
+import { registerDoctorCommand } from './commands/doctor.js';
 import { exportCommand } from './commands/export.js';
 import { importCommand } from './commands/import.js';
 import { interactiveInit } from './commands/interactive.js';
@@ -45,6 +46,7 @@ program
   .action(interactiveInit);
 
 registerOnboardCommand(program);
+registerDoctorCommand(program);
 
 program
   .command('create-world')

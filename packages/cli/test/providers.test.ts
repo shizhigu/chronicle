@@ -23,11 +23,6 @@ import {
   detectProviders,
 } from '../src/providers.js';
 
-/** Fresh env object for a test — never mutates `process.env`. */
-function emptyEnv(): Record<string, string | undefined> {
-  return {};
-}
-
 /**
  * Stub `fetch` that always rejects. Safe default for tests that shouldn't
  * touch the network but include local-server specs in their probe set.
