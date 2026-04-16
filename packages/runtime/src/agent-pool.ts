@@ -9,11 +9,17 @@ import type {
   ClassifiedError,
   Observation,
   ProposedAction,
+  ProviderSpec,
   RetryOptions,
   TurnResult,
   World,
 } from '@chronicle/core';
-import { retryWithBackoff } from '@chronicle/core';
+import {
+  findProviderSpec,
+  resolveProviderApiKey,
+  resolveProviderBaseUrl,
+  retryWithBackoff,
+} from '@chronicle/core';
 
 import {
   type AgentRuntimeAdapter,
@@ -185,7 +191,12 @@ export class AgentPool implements AgentRuntimeAdapter {
 
     if (modelOverride && this.piModule) {
       const prevModel = instance.state.model;
-      instance.state.model = this.piModule.getModel(modelOverride.provider, modelOverride.modelId);
+      const resolved = resolveModelForPi(
+        modelOverride.provider,
+        modelOverride.modelId,
+        this.piModule.getModel,
+      );
+      instance.state.model = resolved.model;
       try {
         await instance.prompt(prompt);
       } finally {
@@ -226,14 +237,28 @@ export class AgentPool implements AgentRuntimeAdapter {
       ? safeDeserializeMessages(Buffer.from(character.sessionStateBlob))
       : [];
 
+    // Resolve the pi-ai Model: hand-build for OpenAI-compatible local
+    // servers (LM Studio, Ollama, vLLM, llama.cpp) + Chinese/aggregator
+    // clouds whose transport is `openai-chat`; fall back to pi-ai's
+    // native `getModel(...)` for Anthropic/Google/OpenAI. Without this,
+    // local-server worlds silently hit pi-ai's `api: 'unknown'` branch
+    // and every agent turn returns an empty message with
+    // `stopReason: 'error'` — which then looks like "the model just
+    // chose to do nothing." See compiler/src/llm.ts for the same logic.
+    const resolved = resolveModelForPi(character.provider, character.modelId, getModel);
+
     const instance = new Agent({
       initialState: {
         systemPrompt,
-        model: getModel(character.provider, character.modelId),
+        model: resolved.model,
         thinkingLevel: character.thinkingLevel,
         tools,
         messages,
       },
+      // pi-agent routes the api key through a callback rather than a
+      // static field so a single Agent instance can target providers
+      // whose credentials change between turns.
+      getApiKey: () => resolved.apiKey,
       sessionId: `chr_${this.world.id}_${character.id}`,
 
       beforeToolCall: async ({ toolCall, args }: { toolCall: any; args: unknown }) => {
@@ -412,6 +437,69 @@ function safeDeserializeMessages(blob: Buffer): any[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * Resolve a pi-ai Model for `(provider, modelId)`. Mirrors the logic in
+ * `@chronicle/compiler`'s `createLlm`: hand-build an OpenAI-compat Model
+ * when the provider spec says so (local servers + Chinese clouds +
+ * aggregators); otherwise defer to pi-ai's native `getModel`.
+ *
+ * Returns both the Model config and the api key that should be handed
+ * to pi-agent. Local servers accept any string so we default to
+ * 'lm-studio'; cloud providers pull from their env var priority list.
+ */
+function resolveModelForPi(
+  provider: string,
+  modelId: string,
+  piGetModel: (provider: string, id: string) => any,
+): { model: any; apiKey: string | undefined } {
+  const spec = findProviderSpec(provider);
+  if (!spec || spec.transport !== 'openai-chat') {
+    // Anthropic / OpenAI / Google — pi-ai has native transports for
+    // these. Their api keys are sourced from env by pi-ai itself.
+    return { model: piGetModel(provider, modelId), apiKey: undefined };
+  }
+  const baseUrl = resolveProviderBaseUrl(spec, process.env);
+  if (!baseUrl) {
+    // Spec exists but no base URL resolvable — fall through to pi-ai
+    // so the failure surfaces there with a clear provider error.
+    return { model: piGetModel(provider, modelId), apiKey: undefined };
+  }
+  return {
+    model: buildOpenAiCompatModel(spec, modelId, baseUrl),
+    apiKey: resolveApiKeyForHandBuilt(spec),
+  };
+}
+
+function buildOpenAiCompatModel(spec: ProviderSpec, modelId: string, baseUrl: string) {
+  return {
+    id: modelId,
+    name: modelId,
+    api: 'openai-completions',
+    provider: 'openai',
+    baseUrl,
+    reasoning: false,
+    input: ['text'] as const,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 32_768,
+    maxTokens: 8_192,
+    compat: {
+      supportsDeveloperRole: false,
+      supportsReasoningEffort: false,
+      supportsUsageInStreaming: false,
+      maxTokensField: 'max_tokens' as const,
+    },
+  };
+}
+
+function resolveApiKeyForHandBuilt(spec: ProviderSpec): string | undefined {
+  if (spec.authType === 'local-server') {
+    const explicit = resolveProviderApiKey(spec, process.env);
+    return explicit?.value ?? process.env.LMSTUDIO_API_KEY ?? 'lm-studio';
+  }
+  const resolved = resolveProviderApiKey(spec, process.env);
+  return resolved?.value;
 }
 
 function estimateTokensFromMessages(messages: any[], before: number): number {
