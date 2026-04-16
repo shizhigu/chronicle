@@ -330,13 +330,31 @@ export class AgentPool implements AgentRuntimeAdapter {
    */
   private wrapToolsForPi(tools: AnyAgentTool[], character: CharacterState) {
     return tools.map((tool) => {
-      const parameters = zodToJsonSchema(tool.parametersSchema, {
-        // Inline everything — pi-agent's validator doesn't follow $refs,
-        // so a nested ref would reproduce the same "schema must be
-        // object or boolean" failure one level deeper.
-        $refStrategy: 'none',
-        target: 'openApi3',
-      }) as Record<string, unknown>;
+      // zod-to-json-schema chats noisy `"Recursive reference detected at
+      // …! Defaulting to any"` warnings on stderr for every truly
+      // recursive schema (propose's `DeadlineSchema` has a self-ref
+      // via `any_of.options`). With `$refStrategy: 'none'` the "any"
+      // fallback is the intended behavior — not a bug — so we suppress
+      // just the recursive-reference line during conversion rather
+      // than have it print on every tick of every run.
+      const origWarn = console.warn;
+      console.warn = (...args: unknown[]) => {
+        const first = args[0];
+        if (typeof first === 'string' && first.startsWith('Recursive reference detected')) return;
+        origWarn(...args);
+      };
+      let parameters: Record<string, unknown>;
+      try {
+        parameters = zodToJsonSchema(tool.parametersSchema, {
+          // Inline everything — pi-agent's validator doesn't follow
+          // $refs, so a nested ref would reproduce the same
+          // "schema must be object or boolean" failure one level deeper.
+          $refStrategy: 'none',
+          target: 'openApi3',
+        }) as Record<string, unknown>;
+      } finally {
+        console.warn = origWarn;
+      }
       return {
         name: tool.name,
         description: tool.description,
