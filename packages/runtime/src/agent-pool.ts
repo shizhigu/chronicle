@@ -335,7 +335,16 @@ export class AgentPool implements AgentRuntimeAdapter {
         // so anything in our codebase that still reads it (tests, etc.)
         // keeps working.
         parametersSchema: tool.parametersSchema,
-        execute: async (args: unknown) => {
+        // Pi-agent-core calls tools as
+        // `execute(toolCallId, params, signal?, onUpdate?)` — params is
+        // the VALIDATED argument object, at position 2. An earlier
+        // version of this wrapper accepted `(args)` as a single positional
+        // arg, so it was receiving the toolCallId *string* instead of
+        // params. Every tool that destructured its args — `speak({to,
+        // content})`, `memory_add({content})`, etc. — then threw
+        // `undefined is not an object` from inside the destructure.
+        // Match pi-agent's signature exactly and forward `params`.
+        execute: async (_toolCallId: string, params: unknown) => {
           const fresh = await this.opts.store.getAgent(character.id);
           this.characters.set(character.id, fresh);
           const ctx: ExecutionContext = {
@@ -345,15 +354,10 @@ export class AgentPool implements AgentRuntimeAdapter {
             store: this.opts.store,
             memory: this.memory,
           };
-          const raw = await tool.execute(args as any, ctx);
-          // Chronicle tools return `{ ok, detail?, sideEffects? }` (our
-          // in-house ExecuteResult). Pi-agent-core expects
-          // `AgentToolResult<T> = { content: Block[], details: T }`
-          // — without it, the agent loop throws
-          // "undefined is not an object (evaluating 'toolMsg.content.filter')"
-          // while trying to render the tool result back to the model
-          // and the whole turn dies. Wrap once, right here, so
-          // individual tool implementations don't need to care.
+          const raw = await tool.execute(params as any, ctx);
+          // Chronicle tools return `{ ok, detail?, sideEffects? }`;
+          // pi-agent-core expects `AgentToolResult<T> = { content: Block[], details: T }`.
+          // Wrap once here so individual tool implementations don't care.
           return {
             content: [{ type: 'text' as const, text: raw.detail ?? (raw.ok ? 'ok' : 'failed') }],
             details: raw,

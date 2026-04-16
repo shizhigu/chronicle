@@ -8,8 +8,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { NavLink, Outlet } from 'react-router';
-import type { Route } from './+types/chronicle';
+import { NavLink, Outlet, useParams } from 'react-router';
 
 interface WorldSnapshot {
   id: string;
@@ -20,12 +19,13 @@ interface WorldSnapshot {
   atmosphereTag?: string;
 }
 
-export async function loader({ params }: Route.LoaderArgs) {
-  return { worldId: params.worldId };
-}
+// No `loader` export — we're in SPA mode (react-router.config.ts has
+// ssr: false), and SPA mode treats `loader` as invalid because there's
+// no server request lifecycle to run it against. Hydration happens
+// entirely client-side via useWorldPoll.
 
 export default function ChronicleLayout() {
-  const { worldId } = useLoaderData();
+  const { worldId = '' } = useParams();
   const world = useWorldPoll(worldId);
 
   return (
@@ -37,16 +37,6 @@ export default function ChronicleLayout() {
       </main>
     </div>
   );
-}
-
-function useLoaderData(): { worldId: string } {
-  // Small shim so we don't drag in the full useLoaderData import path
-  // from react-router just for one value.
-  const r = (globalThis as { __rr_data?: { worldId: string } }).__rr_data;
-  if (r) return r;
-  // Fallback: parse the URL
-  const m = typeof window !== 'undefined' ? window.location.pathname.match(/\/c\/([^/]+)/) : null;
-  return { worldId: m?.[1] ?? '' };
 }
 
 function useWorldPoll(worldId: string): WorldSnapshot | null {

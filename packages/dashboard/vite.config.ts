@@ -17,16 +17,4 @@ export default defineConfig({
       },
     },
   },
-  // Konva resolves to its `-node` variant when Vite sees us via a
-  // bundling path that looks Node-like; force the web build so
-  // react-konva loads the DOM renderer and doesn't demand the native
-  // `canvas` package.
-  resolve: {
-    alias: {
-      konva: 'konva/lib/index.js',
-    },
-  },
-  optimizeDeps: {
-    exclude: ['konva/lib/index-node.js'],
-  },
 });

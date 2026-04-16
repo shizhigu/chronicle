@@ -301,6 +301,23 @@ export class Engine {
         } catch (err) {
           console.error(`[Engine] applyAction failed for ${agent.name}:`, err);
         }
+      } else {
+        // Active agent, no tool call — the LLM was given the floor, used
+        // its turn budget, but didn't commit to any structured action
+        // (pure text reply, or an error classified as non-retryable,
+        // or budget_exhausted). Previously this produced ZERO events,
+        // so from the outside it looked like the agent vanished
+        // between tick_begin and tick_end. Record an explicit tracer
+        // event so UIs and drama detectors can see the silence as
+        // a signal rather than a gap.
+        await this.store.recordEvent({
+          worldId: this.world.id,
+          tick: nextTick,
+          eventType: 'agent_silent',
+          actorId: result.agentId,
+          data: { reason: result.error ?? 'no_tool_call' },
+          tokenCost: result.tokensSpent,
+        });
       }
       // Persist updated agent state. We stamp `lastActiveTick` here for
       // every active turn, action or not — the agent was given the
