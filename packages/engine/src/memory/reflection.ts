@@ -4,7 +4,9 @@
  * Every `reflectionFrequency` ticks, every live agent reflects. The reflection
  * is stored as a high-importance memory so it surfaces in future observations.
  *
- * This is where we spend Sonnet/GPT-5 tokens. Haiku for routine, Sonnet here.
+ * Reflection is where you'd point a stronger model if you want better
+ * long-horizon coherence (per-turn can stay on a cheaper model). No provider
+ * is privileged — the caller passes whatever they configured.
  */
 
 import type { Agent } from '@chronicle/core';
@@ -18,7 +20,11 @@ export interface ReflectionDeps {
       modelOverride?: { provider: string; modelId: string },
     ) => Promise<string>;
   } | null;
-  sonnetModel: { provider: string; modelId: string };
+  /**
+   * Model used for the reflection pass. Pass whatever the user configured
+   * — any provider pi-agent supports (local or cloud) is valid here.
+   */
+  reflectionModel: { provider: string; modelId: string };
 }
 
 export class ReflectionService {
@@ -53,7 +59,7 @@ Write a concise reflection (under 200 words) covering:
 
 This becomes a lasting memory for you. Be honest and in-character.`;
 
-    const reflection = await instance.reflect(prompt, this.deps.sonnetModel);
+    const reflection = await instance.reflect(prompt, this.deps.reflectionModel);
 
     await this.memory.record(agent.id, reflection, {
       tick,

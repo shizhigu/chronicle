@@ -4,7 +4,7 @@
 
 import { WorldCompiler } from '@chronicle/compiler';
 import { WorldStore } from '@chronicle/engine';
-import { loadConfig } from '../config.js';
+import { loadConfig, resolveReflectionModel } from '../config.js';
 import { printNextSteps } from '../output.js';
 import { paths } from '../paths.js';
 
@@ -22,18 +22,21 @@ export interface CreateWorldDeps {
 
 export async function createWorldCommand(opts: Options, deps: CreateWorldDeps = {}): Promise<void> {
   const config = await loadConfig();
-  const provider = opts.provider ?? config.defaultProvider;
-  const model = opts.model ?? config.defaultModel;
+  // CLI --provider/--model override config. If using a mock compiler (tests),
+  // skip the resolver since no real LLM call happens.
+  const provider = opts.provider ?? config.defaultProvider ?? '';
+  const model = opts.model ?? config.defaultModel ?? '';
 
   const store = await WorldStore.open(paths.db);
 
   console.log('✓ Parsing your description with AI...');
   const compiler =
     deps.compiler ??
-    new WorldCompiler({
-      provider: config.sonnetProvider,
-      modelId: config.sonnetModel,
-    });
+    (() => {
+      // Only resolve when we actually need to instantiate the real compiler.
+      const r = resolveReflectionModel(config);
+      return new WorldCompiler({ provider: r.provider, modelId: r.modelId });
+    })();
 
   const compiled = await compiler.parseDescription(opts.desc);
 

@@ -39,7 +39,12 @@ export interface EngineOptions {
   runtime: AgentRuntimeAdapter;
   onEvent?: Subscriber;
   onTickEnd?: (tick: number, worldState: World) => void;
-  sonnetModel?: { provider: string; modelId: string };
+  /**
+   * Model used for reflection cycles (and any other heavier-than-per-turn work).
+   * If omitted, reflection runs against the world's `defaultProvider` + `defaultModelId`.
+   * No provider is privileged — pass whatever the user configured.
+   */
+  reflectionModel?: { provider: string; modelId: string };
 }
 
 export class Engine {
@@ -80,9 +85,11 @@ export class Engine {
       getAgentInstance: (agent: Agent) => ({
         reflect: (prompt, override) => this.runtime.reflect(agent, prompt, override),
       }),
-      sonnetModel: this.opts.sonnetModel ?? {
+      // Fall back to the world's default model — whatever the user chose.
+      // Never privilege a specific provider here.
+      reflectionModel: this.opts.reflectionModel ?? {
         provider: this.world.config.defaultProvider,
-        modelId: 'claude-sonnet-4-6',
+        modelId: this.world.config.defaultModelId,
       },
     };
     this.reflection = new ReflectionService(this.store, this.memory, reflectionDeps);

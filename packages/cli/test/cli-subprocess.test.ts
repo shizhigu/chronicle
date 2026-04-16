@@ -22,10 +22,24 @@ async function runCli(args: string[]): Promise<{
     env: {
       ...process.env,
       CHRONICLE_HOME: TMP_HOME,
-      // Clear keys so onboard reports them missing
+      // Force a "nothing available" environment so test output is
+      // deterministic regardless of the dev machine's setup.
       ANTHROPIC_API_KEY: '',
+      ANTHROPIC_OAUTH_TOKEN: '',
       OPENAI_API_KEY: '',
       GOOGLE_API_KEY: '',
+      GEMINI_API_KEY: '',
+      OPENROUTER_API_KEY: '',
+      MISTRAL_API_KEY: '',
+      GROQ_API_KEY: '',
+      AI_GATEWAY_API_KEY: '',
+      AZURE_OPENAI_API_KEY: '',
+      COPILOT_GITHUB_TOKEN: '',
+      GH_TOKEN: '',
+      GITHUB_TOKEN: '',
+      // Point LM Studio / Ollama probes at dead ports so they fail.
+      LMSTUDIO_BASE_URL: 'http://127.0.0.1:1/v1',
+      OLLAMA_HOST: 'http://127.0.0.1:1',
     },
     stdout: 'pipe',
     stderr: 'pipe',
@@ -66,9 +80,16 @@ describe('chronicle CLI — subprocess smoke', () => {
     expect(parsed.state).toBeTruthy();
     expect(parsed.state.bunOk).toBe(true);
     expect(parsed.state.chronicleHome).toBe(TMP_HOME);
+    expect(Array.isArray(parsed.state.probes)).toBe(true);
+    expect(Array.isArray(parsed.state.available)).toBe(true);
     expect(Array.isArray(parsed.nextSteps)).toBe(true);
-    // Without any keys set, onboarding should tell us to export one
-    expect(parsed.nextSteps.join('\n')).toContain('ANTHROPIC_API_KEY');
+    // With no keys and no local server, onboard lists all options (local+cloud)
+    // — multiple brands, not a single recommendation.
+    const hints = parsed.nextSteps.join('\n');
+    expect(hints).toMatch(/LM Studio/);
+    expect(hints).toMatch(/Ollama/);
+    expect(hints).toMatch(/ANTHROPIC_API_KEY/);
+    expect(hints).toMatch(/OPENROUTER_API_KEY/);
   });
 
   it('onboard without --json prints human-readable with NEXT_STEPS block', async () => {

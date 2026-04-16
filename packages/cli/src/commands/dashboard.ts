@@ -17,7 +17,7 @@ import {
   WorldStore,
 } from '@chronicle/engine';
 import { AgentPool } from '@chronicle/runtime';
-import { loadConfig } from '../config.js';
+import { loadConfig, resolveReflectionModel } from '../config.js';
 import { printNextSteps } from '../output.js';
 import { paths } from '../paths.js';
 
@@ -41,7 +41,10 @@ export async function dashboardCommand(worldId: string, opts: Options): Promise<
     dbPath: paths.db,
     worldId,
     runtime,
-    sonnetModel: { provider: config.sonnetProvider, modelId: config.sonnetModel },
+    reflectionModel: (() => {
+      const r = resolveReflectionModel(config);
+      return { provider: r.provider, modelId: r.modelId };
+    })(),
   });
   await engine.init();
 

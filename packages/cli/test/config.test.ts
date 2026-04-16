@@ -32,10 +32,13 @@ describe('config loader', () => {
     rmSync(TMP_HOME, { recursive: true, force: true });
   });
 
-  it('creates a default config on first load when file is absent', async () => {
+  it('creates an EMPTY config on first load (no provider privileged)', async () => {
     const cfg = await loadConfig();
-    expect(cfg.defaultProvider).toBe('anthropic');
-    expect(cfg.defaultModel).toBe('claude-haiku-4-5');
+    // Chronicle deliberately doesn't default to any provider — user or
+    // onboard picks. The file still gets created so subsequent loads are
+    // no-ops, but provider/model are left unset.
+    expect(cfg.defaultProvider).toBeUndefined();
+    expect(cfg.defaultModel).toBeUndefined();
     expect(cfg.telemetryEnabled).toBe(true);
     expect(existsSync(paths.config)).toBe(true);
   });
@@ -59,9 +62,9 @@ describe('config loader', () => {
 
   it('setConfigValue preserves unrelated keys', async () => {
     const before = await loadConfig();
-    await setConfigValue('sonnetModel', 'claude-sonnet-4-6-override');
+    await setConfigValue('reflectionModel', 'my-custom-reflection-model');
     const after = await loadConfig();
-    expect(after.sonnetModel).toBe('claude-sonnet-4-6-override');
+    expect(after.reflectionModel).toBe('my-custom-reflection-model');
     expect(after.defaultProvider).toBe(before.defaultProvider);
     expect(after.providers.anthropic?.apiKey).toBe(before.providers.anthropic?.apiKey);
   });

@@ -1,12 +1,13 @@
 /**
  * `chronicle onboard` — the single command a user (or Claude Code) runs first.
  *
- * It prints a NEXT-STEPS hint block — natural-language instructions that Claude
- * Code (or any capable agent) can follow to finish setup. Idempotent: rerun to
- * re-check environment; it never overwrites existing config without a prompt.
+ * Prints a NEXT_STEPS hint block — natural-language instructions Claude Code
+ * (or any capable agent) can follow to finish setup. Idempotent; rerun to
+ * re-check. Never overwrites existing config without --force.
  *
- * The flow is the inverse of a typical setup wizard: instead of asking the user
- * questions, we ask *their agent* to complete the next step on their behalf.
+ * Chronicle does not privilege any provider. We probe everything pi-agent
+ * supports (local servers + cloud providers), list what's available, and let
+ * the user (or their agent) choose. No auto-pick = no brand bias.
  */
 
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -15,6 +16,7 @@ import chalk from 'chalk';
 import type { Command } from 'commander';
 import { printNextSteps } from '../output.js';
 import { paths } from '../paths.js';
+import { type ProviderProbe, availableProviders, detectProviders } from '../providers.js';
 
 export function registerOnboardCommand(program: Command): void {
   program
@@ -26,34 +28,25 @@ export function registerOnboardCommand(program: Command): void {
       const force: boolean = opts.force ?? false;
       const asJson: boolean = opts.json ?? false;
 
+      const probes = await detectProviders();
+      const available = availableProviders(probes);
+
       const state = inspectEnvironment();
-
-      if (!state.configDirExists) {
-        mkdirSync(paths.root, { recursive: true });
-      }
-      if (!state.worldsDirExists) {
-        mkdirSync(paths.exports, { recursive: true });
-      }
+      if (!state.configDirExists) mkdirSync(paths.root, { recursive: true });
+      if (!state.worldsDirExists) mkdirSync(paths.exports, { recursive: true });
       if (!state.configFileExists || force) {
-        writeFileSync(paths.config, defaultConfigYaml(), 'utf-8');
+        writeFileSync(paths.config, defaultConfigJson(), 'utf-8');
       }
 
-      const nextState = inspectEnvironment();
+      const finalState: FullState = { ...inspectEnvironment(), probes, available };
+      const nextSteps = buildNextSteps(finalState);
+
       if (asJson) {
-        process.stdout.write(
-          `${JSON.stringify(
-            {
-              state: nextState,
-              nextSteps: buildNextSteps(nextState),
-            },
-            null,
-            2,
-          )}\n`,
-        );
+        process.stdout.write(`${JSON.stringify({ state: finalState, nextSteps }, null, 2)}\n`);
         return;
       }
 
-      renderPretty(nextState);
+      renderPretty(finalState, nextSteps);
     });
 }
 
@@ -67,11 +60,15 @@ interface EnvState {
   configDirExists: boolean;
   configFileExists: boolean;
   worldsDirExists: boolean;
-  anthropicKey: boolean;
-  openAiKey: boolean;
-  googleKey: boolean;
   piAgentReachable: boolean;
   chronicleHome: string;
+}
+
+interface FullState extends EnvState {
+  /** Every provider probed, available or not — useful for the UI table. */
+  probes: ProviderProbe[];
+  /** The subset that are actually usable right now. */
+  available: ProviderProbe[];
 }
 
 function inspectEnvironment(): EnvState {
@@ -81,9 +78,6 @@ function inspectEnvironment(): EnvState {
     configDirExists: existsSync(paths.root),
     configFileExists: existsSync(paths.config),
     worldsDirExists: existsSync(paths.exports),
-    anthropicKey: !!process.env.ANTHROPIC_API_KEY,
-    openAiKey: !!process.env.OPENAI_API_KEY,
-    googleKey: !!process.env.GOOGLE_API_KEY,
     piAgentReachable: canResolve('@mariozechner/pi-agent-core'),
     chronicleHome: paths.root,
   };
@@ -91,8 +85,6 @@ function inspectEnvironment(): EnvState {
 
 function canResolve(mod: string): boolean {
   try {
-    // Bun's import.meta.resolve doesn't throw on missing, so use require.resolve shim.
-    // Fall back to a simple fs check for node_modules.
     const nodeRequire = (globalThis as { require?: NodeRequire }).require;
     if (nodeRequire) {
       nodeRequire.resolve(mod);
@@ -119,7 +111,7 @@ function compareVersions(a: string, b: string): number {
 // Next-steps synthesis (natural-language instructions for Claude Code)
 // ============================================================
 
-export function buildNextSteps(s: EnvState): string[] {
+export function buildNextSteps(s: FullState): string[] {
   const steps: string[] = [];
 
   if (!s.bunOk) {
@@ -128,41 +120,58 @@ export function buildNextSteps(s: EnvState): string[] {
     );
   }
 
-  if (!s.anthropicKey && !s.openAiKey && !s.googleKey) {
+  if (s.available.length === 0) {
     steps.push(
-      'Export at least one LLM provider key. The cheapest path is Anthropic: `export ANTHROPIC_API_KEY=sk-…` (get one at console.anthropic.com).',
+      'No LLM provider detected. Any of these work — Chronicle treats all equally:\n' +
+        '  LOCAL (runs on this machine, no API cost):\n' +
+        '    - LM Studio (https://lmstudio.ai): install, load a model, `lms server start`\n' +
+        '    - Ollama (https://ollama.com): install, `ollama pull <model>`, `ollama serve`\n' +
+        '  CLOUD (paid, pay-per-token):\n' +
+        '    - export ANTHROPIC_API_KEY=...\n' +
+        '    - export OPENAI_API_KEY=...\n' +
+        '    - export OPENROUTER_API_KEY=...     (one key, many models)\n' +
+        '    - export GEMINI_API_KEY=...         (Google AI Studio)\n' +
+        '    - export MISTRAL_API_KEY=...\n' +
+        '    - export GROQ_API_KEY=...\n' +
+        'Then rerun `chronicle onboard`.',
     );
-  }
-
-  if (!s.configFileExists) {
+  } else {
+    const list = s.available
+      .map((p) => {
+        const model = p.suggestedModel ? ` · model ${p.suggestedModel}` : '';
+        return `  - ${p.id}${model}`;
+      })
+      .join('\n');
     steps.push(
-      `Chronicle's config file was created at \`${paths.config}\`. Open it and edit \`defaultProvider\` / \`defaultModelId\` if you want to target OpenAI or a local model instead.`,
+      `Available providers (pick one — Chronicle treats them all equally):\n${list}\n\n` +
+        'Set your choice in `~/.chronicle/config.json` (`defaultProvider` + `defaultModel`),\n' +
+        'or run:\n' +
+        '  chronicle config --set defaultProvider=<id>\n' +
+        '  chronicle config --set defaultModel=<model>',
     );
   }
 
   if (!s.piAgentReachable) {
     steps.push(
-      'pi-agent is not yet installed in this project. Run `bun add @mariozechner/pi-agent-core @mariozechner/pi-ai` in the project root.',
+      'pi-agent is not yet installed in this project. Run `bun add @mariozechner/pi-agent-core @mariozechner/pi-ai`.',
     );
   }
 
-  // Always-present step: how to create the first world
   steps.push(
-    'Create your first world with a natural-language description. Try: `chronicle create-world --desc "A dinner party where the host is lying about their fortune and five guests each have a secret."`',
+    'Create your first world: `chronicle create-world --desc "A dinner party where the host is lying about their fortune and five guests each have a secret."`',
   );
-
   steps.push(
-    'Watch it unfold. After creating, run `chronicle run <world-id>` in one terminal and `chronicle dashboard` in another. Open http://localhost:7070 to see the animated view.',
+    'Watch it unfold: `chronicle run <world-id>` in one terminal, `chronicle dashboard` in another. Open http://localhost:7070.',
   );
 
   return steps;
 }
 
 // ============================================================
-// Pretty CLI output
+// Pretty output
 // ============================================================
 
-function renderPretty(s: EnvState): void {
+function renderPretty(s: FullState, steps: string[]): void {
   const lines: string[] = [];
   lines.push('');
   lines.push(chalk.yellow('CHRONICLE'));
@@ -171,65 +180,40 @@ function renderPretty(s: EnvState): void {
   lines.push(`${statusIcon(s.bunOk)} Bun ${s.bunVersion ?? '(not detected)'}`);
   lines.push(`${statusIcon(s.configDirExists)} Config dir: ${chalk.gray(s.chronicleHome)}`);
   lines.push(`${statusIcon(s.configFileExists)} Config file: ${chalk.gray(paths.config)}`);
-  lines.push(
-    `${statusIcon(
-      s.anthropicKey || s.openAiKey || s.googleKey,
-    )} LLM provider key: ${providerSummary(s)}`,
-  );
   lines.push(`${statusIcon(s.piAgentReachable)} pi-agent installed`);
+  lines.push('');
+  lines.push(chalk.gray('Providers probed (all treated equally — you pick):'));
+  for (const p of s.probes) {
+    const icon = p.available ? chalk.green('✓') : chalk.gray('·');
+    const label = p.available ? chalk.white(p.label) : chalk.gray(p.label);
+    const note = p.note ? chalk.gray(` — ${p.note}`) : '';
+    lines.push(`  ${icon} ${label}${note}`);
+  }
   lines.push('');
 
   process.stdout.write(`${lines.join('\n')}\n`);
-  printNextSteps(buildNextSteps(s));
+  printNextSteps(steps);
 }
 
 function statusIcon(ok: boolean): string {
   return ok ? chalk.green('✓') : chalk.yellow('!');
 }
 
-function providerSummary(s: EnvState): string {
-  const have: string[] = [];
-  if (s.anthropicKey) have.push('Anthropic');
-  if (s.openAiKey) have.push('OpenAI');
-  if (s.googleKey) have.push('Google');
-  return have.length === 0 ? chalk.yellow('none') : chalk.gray(have.join(', '));
-}
-
 // ============================================================
-// Default config
+// Default config — EMPTY provider/model. User picks.
 // ============================================================
 
-function defaultConfigYaml(): string {
-  return `# Chronicle user config
-# Generated by: chronicle onboard
-# Regenerate with: chronicle onboard --force
-
-version: 1
-
-# Default LLM provider and model for agents.
-# Override per-world in the scenario file.
-defaultProvider: anthropic
-defaultModelId: claude-haiku-4-5
-reflectionModelId: claude-sonnet-4-6
-
-# How many ticks between reflection cycles (null = disabled)
-reflectionFrequency: 20
-
-# Soft-rule judge uses a cheap model to keep costs bounded.
-softRuleJudge:
-  provider: anthropic
-  modelId: claude-haiku-4-5
-
-# Dashboard server settings (chronicle dashboard)
-dashboard:
-  host: localhost
-  port: 7070
-  wsPort: 7071
-
-# Global safety limits. Worlds can tighten these, never loosen.
-safety:
-  perWorldTokenCeiling: 500000
-  blockOnDeath: false
-  contentFilter: moderate
-`;
+function defaultConfigJson(): string {
+  const cfg = {
+    $schema: 'https://chronicle.sh/schemas/config-v1.json',
+    defaultProvider: '',
+    defaultModel: '',
+    reflectionProvider: '',
+    reflectionModel: '',
+    providers: {},
+    telemetryEnabled: true,
+    dashboard: { host: 'localhost', port: 7070, wsPort: 7071 },
+    safety: { perWorldTokenCeiling: 500_000, blockOnDeath: false, contentFilter: 'moderate' },
+  };
+  return `${JSON.stringify(cfg, null, 2)}\n`;
 }

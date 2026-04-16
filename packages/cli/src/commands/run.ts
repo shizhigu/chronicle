@@ -7,7 +7,7 @@
 
 import { Engine } from '@chronicle/engine';
 import { AgentPool } from '@chronicle/runtime';
-import { loadConfig } from '../config.js';
+import { loadConfig, resolveReflectionModel } from '../config.js';
 import { printNextSteps } from '../output.js';
 import { paths } from '../paths.js';
 
@@ -38,11 +38,12 @@ export async function runCommand(worldId: string, opts: Options): Promise<void> 
   const ruleEnforcer = new RuleEnforcer(store, world);
   const runtime = new AgentPool({ store, ruleEnforcer, events });
 
+  const reflection = resolveReflectionModel(config);
   const engine = new Engine({
     dbPath: paths.db,
     worldId,
     runtime,
-    sonnetModel: { provider: config.sonnetProvider, modelId: config.sonnetModel },
+    reflectionModel: { provider: reflection.provider, modelId: reflection.modelId },
   });
   try {
     await engine.init();

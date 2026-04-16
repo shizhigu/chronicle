@@ -1,6 +1,6 @@
 /**
  * ReflectionService — periodic per-agent LLM reflection, persisted as a
- * high-importance memory. Drives Sonnet-tier tokens.
+ * high-importance memory.
  */
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
@@ -26,8 +26,8 @@ function makeWorld(): World {
       atmosphereTag: 'default',
       scale: 'small',
       mapLayout: { kind: 'graph', locations: [] },
-      defaultModelId: 'claude-haiku-4-5',
-      defaultProvider: 'anthropic',
+      defaultModelId: 'test-model',
+      defaultProvider: 'test-provider',
       reflectionFrequency: 20,
       dramaCatalystEnabled: true,
     },
@@ -61,9 +61,9 @@ function makeAgent(wId: string, name: string): Agent {
     tokensSpent: 0,
     sessionId: null,
     sessionStateBlob: null,
-    modelTier: 'haiku',
-    provider: 'anthropic',
-    modelId: 'claude-haiku-4-5',
+    modelTier: 'default',
+    provider: 'test-provider',
+    modelId: 'test-model',
     thinkingLevel: 'low',
     birthTick: 0,
     deathTick: null,
@@ -71,6 +71,8 @@ function makeAgent(wId: string, name: string): Agent {
     createdAt: new Date().toISOString(),
   };
 }
+
+const TEST_REFLECTION_MODEL = { provider: 'test-provider', modelId: 'test-model-strong' };
 
 beforeEach(async () => {
   store = await WorldStore.open(':memory:');
@@ -94,31 +96,24 @@ describe('ReflectionService', () => {
           return `${a.name} reflects: I should be careful around Bob.`;
         },
       }),
-      sonnetModel: { provider: 'anthropic', modelId: 'claude-sonnet-4-6' },
+      reflectionModel: TEST_REFLECTION_MODEL,
     };
     const svc = new ReflectionService(store, memory, deps);
 
     await svc.triggerFor([alice, bob], 20);
 
-    // Both agents reflected
     expect(reflectCalls.length).toBe(2);
-    // Each was asked to use Sonnet
+    // Each was invoked with whatever reflection model the deps specified
     for (const c of reflectCalls) {
-      expect(c.override).toEqual({
-        provider: 'anthropic',
-        modelId: 'claude-sonnet-4-6',
-      });
+      expect(c.override).toEqual(TEST_REFLECTION_MODEL);
     }
-    // Prompt mentions reflection
     expect(reflectCalls[0]?.prompt).toContain('REFLECTION');
 
-    // Each agent gained a memory
     const aliceMems = await store.getMemoriesForAgent(alice.id);
     const bobMems = await store.getMemoriesForAgent(bob.id);
     expect(aliceMems.length).toBe(1);
     expect(bobMems.length).toBe(1);
 
-    // Memory is tagged as reflection with high importance
     expect(aliceMems[0]?.memoryType).toBe('reflection');
     expect(aliceMems[0]?.importance).toBeGreaterThanOrEqual(0.8);
     expect(aliceMems[0]?.content).toContain('Alice reflects');
@@ -134,7 +129,7 @@ describe('ReflectionService', () => {
           : {
               reflect: async () => 'Bob reflects.',
             },
-      sonnetModel: { provider: 'anthropic', modelId: 'claude-sonnet-4-6' },
+      reflectionModel: TEST_REFLECTION_MODEL,
     };
     const svc = new ReflectionService(store, memory, deps);
 
@@ -142,7 +137,7 @@ describe('ReflectionService', () => {
 
     const aliceMems = await store.getMemoriesForAgent(alice.id);
     const bobMems = await store.getMemoriesForAgent(bob.id);
-    expect(aliceMems.length).toBe(0); // skipped
+    expect(aliceMems.length).toBe(0);
     expect(bobMems.length).toBe(1);
   });
 
@@ -158,7 +153,7 @@ describe('ReflectionService', () => {
           return 'Bob reflects fine.';
         },
       }),
-      sonnetModel: { provider: 'anthropic', modelId: 'claude-sonnet-4-6' },
+      reflectionModel: TEST_REFLECTION_MODEL,
     };
     const svc = new ReflectionService(store, memory, deps);
 
@@ -166,8 +161,8 @@ describe('ReflectionService', () => {
 
     const aliceMems = await store.getMemoriesForAgent(alice.id);
     const bobMems = await store.getMemoriesForAgent(bob.id);
-    expect(aliceMems.length).toBe(0); // failed
-    expect(bobMems.length).toBe(1); // succeeded
+    expect(aliceMems.length).toBe(0);
+    expect(bobMems.length).toBe(1);
 
     console.error = originalError;
   });
@@ -179,7 +174,7 @@ describe('ReflectionService', () => {
       getAgentInstance: () => ({
         reflect: async () => `reflection #${++callCount}`,
       }),
-      sonnetModel: { provider: 'anthropic', modelId: 'claude-sonnet-4-6' },
+      reflectionModel: TEST_REFLECTION_MODEL,
     };
     const svc = new ReflectionService(store, memory, deps);
 
@@ -189,9 +184,7 @@ describe('ReflectionService', () => {
 
     const mems = await store.getMemoriesForAgent(alice.id);
     expect(mems.length).toBe(3);
-    // All have reflection type
     expect(mems.every((m) => m.memoryType === 'reflection')).toBe(true);
-    // The most recent by createdTick should be #3
     const latest = mems.sort((a, b) => b.createdTick - a.createdTick)[0];
     expect(latest?.content).toContain('#3');
     expect(latest?.createdTick).toBe(60);
