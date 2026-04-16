@@ -61,8 +61,14 @@ export function createLlm(): Llm {
       // and `complete(model, context, options)` is a top-level function.
       // We loosen types at this boundary because pi-ai's generics are
       // parameterized over a model literal we don't carry through.
-      // biome-ignore lint/suspicious/noExplicitAny: pi-ai boundary
-      const anyMod = mod as any;
+      const anyMod = mod as unknown as {
+        getModel: (provider: string, id: string) => unknown;
+        complete: (
+          model: unknown,
+          context: unknown,
+          options: Record<string, unknown>,
+        ) => Promise<unknown>;
+      };
 
       const spec = findProviderSpec(opts.provider);
       const handBuilt = shouldHandBuild(spec, process.env);
@@ -89,18 +95,7 @@ export function createLlm(): Llm {
       }
 
       const result = await anyMod.complete(model, context, completeOptions);
-
-      // Extract the text payload from the AssistantMessage content blocks.
-      if (typeof result === 'string') return result;
-      const content = result?.content;
-      if (Array.isArray(content)) {
-        return content
-          .filter((c: { type?: string }) => c?.type === 'text')
-          .map((c: { text?: string }) => c.text ?? '')
-          .join('\n');
-      }
-      if (typeof content === 'string') return content;
-      return '';
+      return extractText(result);
     },
   };
 }
@@ -192,6 +187,31 @@ function resolveApiKeyForHandBuilt(
   }
   const resolved = resolveProviderApiKey(spec, env);
   return resolved?.value;
+}
+
+/**
+ * Extract plain text from pi-ai's `complete()` result. Handles both the
+ * stringly-typed return (older pi-ai versions) and the content-block
+ * shape (`{ content: string | Array<{type, text}> }`). Unknown shapes
+ * fall back to "" rather than throwing, so a provider quirk never
+ * crashes the compile loop — callers surface that as a Zod error when
+ * parsing JSON anyway.
+ */
+function extractText(result: unknown): string {
+  if (typeof result === 'string') return result;
+  if (!result || typeof result !== 'object') return '';
+  const content = (result as { content?: unknown }).content;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter(
+        (c): c is { type: string; text?: string } =>
+          typeof c === 'object' && c !== null && (c as { type?: unknown }).type === 'text',
+      )
+      .map((c) => c.text ?? '')
+      .join('\n');
+  }
+  return '';
 }
 
 export async function parseJsonResponse<T>(raw: string): Promise<T> {
