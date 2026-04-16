@@ -19,12 +19,29 @@ const ClassificationSchema = z.object({
   reasoning: z.string().optional(),
 });
 
+/**
+ * `scope` is an optional shaping clause on rules. LLMs at the 4B-ish size
+ * routinely return a prose string ("applies to all agents") or an array
+ * where an object is expected — perfectly defensible interpretations of
+ * the natural-language prompt that would otherwise crash the compile with
+ * an unreadable Zod dump.
+ *
+ * Preprocess: if it's not a plain object, drop it silently. Callers that
+ * need to distinguish "user scoped this rule" from "we couldn't parse the
+ * scope" can inspect `compilerNotes` — we leave a marker there in the
+ * builder functions.
+ */
+const LooseScope = z.preprocess((raw) => {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw;
+  return undefined;
+}, z.record(z.any()).optional());
+
 const HardRuleSchema = z.object({
   predicate: z.string(), // high-level human description of the condition
   check: z.string(), // compiled check expression (e.g., "character.alive")
   appliesToAction: z.union([z.string(), z.array(z.string())]).optional(),
   onViolation: z.enum(['reject', 'auto_correct']).or(z.string()).default('reject'),
-  scope: z.record(z.any()).optional(),
+  scope: LooseScope,
 });
 
 const SoftRuleSchema = z.object({
@@ -35,14 +52,14 @@ const SoftRuleSchema = z.object({
     .array(z.enum(['affection', 'trust', 'respect', 'familiarity']))
     .default([]),
   reputationDelta: z.number().default(0),
-  scope: z.record(z.any()).optional(),
+  scope: LooseScope,
 });
 
 const EconomicRuleSchema = z.object({
   appliesToAction: z.string(),
   costs: z.record(z.number()).default({}),
   precondition: z.string().optional(),
-  scope: z.record(z.any()).optional(),
+  scope: LooseScope,
 });
 
 // ============================================================

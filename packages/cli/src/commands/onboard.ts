@@ -234,13 +234,16 @@ function statusIcon(ok: boolean): string {
 // Default config — EMPTY provider/model. User picks.
 // ============================================================
 
+/**
+ * Default contents of ~/.chronicle/config.json. Keys that demand a user
+ * choice (provider / model) are deliberately OMITTED rather than written
+ * as empty strings — an empty string reads like "user set it to blank" to
+ * a human scanning the file, and the resolvers have to treat it as unset
+ * anyway. Absent-key wins on both readability and robustness.
+ */
 function defaultConfigJson(): string {
   const cfg = {
     $schema: 'https://chronicle.sh/schemas/config-v1.json',
-    defaultProvider: '',
-    defaultModel: '',
-    reflectionProvider: '',
-    reflectionModel: '',
     providers: {},
     telemetryEnabled: true,
     dashboard: { host: 'localhost', port: 7070, wsPort: 7071 },

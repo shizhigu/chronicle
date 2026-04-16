@@ -86,25 +86,43 @@ export async function setConfigValue(key: string, value: string): Promise<void> 
 /**
  * Helper for commands that need an LLM: returns the resolved provider+model,
  * or throws a clear error with next-steps hint.
+ *
+ * Truthy-checks (rather than `??`) because the on-disk config file uses
+ * empty strings as placeholders until the user sets real values — `??`
+ * would treat `""` as a valid choice and emit an unusable request.
  */
 export function resolveDefaultModel(cfg: Config): { provider: string; modelId: string } {
-  if (!cfg.defaultProvider || !cfg.defaultModel) {
-    throw new Error(
-      'No default provider/model configured. Run `chronicle onboard` to detect available options, or edit ~/.chronicle/config.json.',
-    );
-  }
-  return { provider: cfg.defaultProvider, modelId: cfg.defaultModel };
-}
-
-export function resolveReflectionModel(cfg: Config): { provider: string; modelId: string } {
-  // If no reflection-specific model is set, fall back to the default model.
-  // Users who want a stronger model for reflection point
-  // `reflectionProvider` / `reflectionModel` at one.
-  const provider = cfg.reflectionProvider ?? cfg.defaultProvider;
-  const modelId = cfg.reflectionModel ?? cfg.defaultModel;
+  const provider = cfg.defaultProvider || undefined;
+  const modelId = cfg.defaultModel || undefined;
   if (!provider || !modelId) {
     throw new Error(
-      'No reflection model configured. Run `chronicle onboard` or edit ~/.chronicle/config.json.',
+      'No default provider/model configured. Run `chronicle onboard` to detect available options, then:\n' +
+        '  chronicle config --set defaultProvider=<id>\n' +
+        '  chronicle config --set defaultModel=<model>',
+    );
+  }
+  return { provider, modelId };
+}
+
+/**
+ * Resolve the model used for reflection / heavier world-compilation work.
+ * Falls back to the default model when unset — users who want a stronger
+ * model for reflection can point `reflectionProvider` / `reflectionModel`
+ * at one explicitly.
+ *
+ * Falls through empty strings (the default config ships `""` placeholders)
+ * so "never set a reflection model" and "deliberately cleared it" are the
+ * same thing.
+ */
+export function resolveReflectionModel(cfg: Config): { provider: string; modelId: string } {
+  const provider = cfg.reflectionProvider || cfg.defaultProvider;
+  const modelId = cfg.reflectionModel || cfg.defaultModel;
+  if (!provider || !modelId) {
+    throw new Error(
+      'No reflection or default model configured. Run `chronicle onboard`, then:\n' +
+        '  chronicle config --set defaultProvider=<id>\n' +
+        '  chronicle config --set defaultModel=<model>\n' +
+        '(reflection falls back to the default if unset)',
     );
   }
   return { provider, modelId };
