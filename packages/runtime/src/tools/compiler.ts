@@ -34,19 +34,31 @@ export interface ExecuteResult {
 // accept the family as a wildcard at the collection level.
 export type AnyAgentTool = AgentTool<any>;
 
+/** Action tool names reserved by core tools — world schemas can't shadow these. */
+const CORE_TOOL_NAMES = new Set(['observe', 'think', 'speak', 'remember', 'recall']);
+
 export function compileWorldTools(
   _world: World,
   _character: Agent,
   store: WorldStore,
   schemas: ActionSchema[],
 ): AnyAgentTool[] {
-  // Always register core tools
-  const tools: AnyAgentTool[] = [coreObserve(), coreThink(), coreSpeak()];
+  // Always register core tools. `remember` + `recall` let an agent manage
+  // its own memory — hermes-agent's key pattern. Agents with an explicit
+  // memory surface feel markedly more coherent than ones that only have
+  // an externally-injected retrieval.
+  const tools: AnyAgentTool[] = [
+    coreObserve(),
+    coreThink(),
+    coreSpeak(),
+    coreRemember(),
+    coreRecall(),
+  ];
 
   // Plus schema-driven world-specific tools
   for (const schema of schemas) {
     if (!schema.active) continue;
-    if (['observe', 'think', 'speak'].includes(schema.name)) continue; // already have core
+    if (CORE_TOOL_NAMES.has(schema.name)) continue; // core wins
     tools.push(compileSchemaAsTool(schema, store));
   }
 
@@ -128,6 +140,132 @@ function coreSpeak(): AgentTool<{ to: string; content: string; tone?: string }> 
       return { ok: true, detail: `heard_by:${heardBy.length}` };
     },
   };
+}
+
+/**
+ * Explicit, agent-driven memory write. Distinct from `think` — think
+ * records a fleeting inner-voice line with default importance 0.4;
+ * remember is "I want to make sure I hold onto this" with caller-chosen
+ * importance and typed memory (reflection / goal / belief_about_other).
+ *
+ * The agent decides what's worth remembering. That's the whole point.
+ */
+function coreRemember(): AgentTool<{
+  content: string;
+  importance?: number;
+  aboutAgent?: string;
+  kind?: 'reflection' | 'goal' | 'belief_about_other';
+}> {
+  return {
+    name: 'remember',
+    description:
+      'Record something to your long-term memory. Use this when a moment feels important — a promise, a betrayal, a plan, an insight about someone. Importance is 0.0–1.0 (default 0.6). Kind: "reflection" (default) / "goal" / "belief_about_other".',
+    parametersSchema: z.object({
+      content: z.string().min(1).max(2000),
+      importance: z.number().min(0).max(1).optional(),
+      aboutAgent: z.string().optional(),
+      kind: z.enum(['reflection', 'goal', 'belief_about_other']).optional(),
+    }),
+    execute: async ({ content, importance, aboutAgent, kind }, ctx) => {
+      const aboutAgentId = aboutAgent ? await resolveAgentByName(ctx, aboutAgent) : null;
+      await ctx.store.addMemory({
+        agentId: ctx.character.id,
+        createdTick: ctx.tick,
+        memoryType: kind ?? 'reflection',
+        content,
+        importance: importance ?? 0.6,
+        decay: 1.0,
+        relatedEventId: null,
+        aboutAgentId,
+        embedding: null,
+        lastAccessedTick: null,
+      });
+      return {
+        ok: true,
+        detail: `remembered:${kind ?? 'reflection'}:importance=${(importance ?? 0.6).toFixed(2)}`,
+      };
+    },
+  };
+}
+
+/**
+ * Query the agent's own memory store. Uses the same recency-×-importance-
+ * ×-keyword-overlap scoring as the passive `MemoryService` so both paths
+ * agree on relevance. An agent calling `recall` every turn is a sign the
+ * passive retrieval isn't giving them enough context — worth watching
+ * in telemetry once we have it.
+ *
+ * Returns up to `k` formatted memory lines in `detail`. Mutates
+ * `lastAccessedTick` on each returned memory so decay scoring rewards
+ * what the agent actually uses.
+ */
+function coreRecall(): AgentTool<{ query: string; k?: number }> {
+  return {
+    name: 'recall',
+    description:
+      "Search your own memory. Use this when you're not sure if you've encountered something before, or want to remind yourself what you know about someone or some topic. Returns up to K matching memories (default 5, max 20).",
+    parametersSchema: z.object({
+      query: z.string().min(1).max(500),
+      k: z.number().int().min(1).max(20).optional(),
+    }),
+    execute: async ({ query, k }, ctx) => {
+      const limit = k ?? 5;
+      const memories = await ctx.store.getMemoriesForAgent(ctx.character.id, 200);
+      if (memories.length === 0) {
+        return { ok: true, detail: 'no_memories' };
+      }
+      const queryTokens = memoryTokenize(query);
+      const scored = memories
+        .map((m) => ({ m, score: scoreMemoryForRecall(m, ctx.tick, queryTokens) }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit);
+
+      const lines = scored.map(({ m, score }) => {
+        const age = ctx.tick - m.createdTick;
+        const about = m.aboutAgentId ? ` [about:${m.aboutAgentId}]` : '';
+        return `[t${m.createdTick} · ${age}t ago · ${m.memoryType}${about} · score=${score.toFixed(2)}] ${m.content}`;
+      });
+
+      // Touch lastAccessedTick on the returned memories so retrieval
+      // scoring rewards the memories the agent is actually using.
+      for (const { m } of scored) {
+        if (typeof m.id === 'number') {
+          await ctx.store.updateMemoryAccessed(m.id, ctx.tick);
+        }
+      }
+
+      return { ok: true, detail: `recalled:${scored.length}\n${lines.join('\n')}` };
+    },
+  };
+}
+
+// Shared with MemoryService's recency × importance × overlap scoring so
+// agent-initiated and engine-initiated retrieval agree.
+function memoryTokenize(text: string): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .replace(/[^a-z0-9\s\u4e00-\u9fff]/g, ' ')
+      .split(/\s+/)
+      .filter((t) => t.length >= 2),
+  );
+}
+
+function scoreMemoryForRecall(
+  m: { createdTick: number; importance: number; content: string },
+  currentTick: number,
+  queryTokens: Set<string>,
+): number {
+  const age = currentTick - m.createdTick;
+  const recency = Math.exp(-age / 50);
+  const contentTokens = memoryTokenize(m.content);
+  let overlap = 0;
+  for (const t of queryTokens) if (contentTokens.has(t)) overlap++;
+  const similarity =
+    queryTokens.size === 0 || contentTokens.size === 0
+      ? 0
+      : overlap / Math.max(queryTokens.size, contentTokens.size);
+  return 0.45 * recency + 0.35 * m.importance + 0.2 * similarity;
 }
 
 async function resolveAgentByName(ctx: ExecutionContext, name: string): Promise<string | null> {
