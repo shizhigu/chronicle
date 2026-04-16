@@ -16,8 +16,9 @@ import { lmStudioReady, resolveLmStudioModel } from './lmstudio-helper.js';
 
 const READY = await lmStudioReady();
 const MODEL = resolveLmStudioModel();
+const LIVE_TESTS_ENABLED = process.env.CHRONICLE_LIVE_TESTS === '1';
 
-describe.skipIf(!READY)('RuleCompiler live · LM Studio', () => {
+describe.skipIf(!READY || !LIVE_TESTS_ENABLED)('RuleCompiler live · LM Studio', () => {
   it('compiles a simple hard rule → DSL that actually parses', async () => {
     const compiler = new RuleCompiler({ provider: 'lmstudio', modelId: MODEL });
     const rule = await compiler.compileOne(

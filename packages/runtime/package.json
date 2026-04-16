@@ -26,7 +26,8 @@
     "@chronicle/engine": "workspace:*",
     "@mariozechner/pi-agent-core": "~0.67.3",
     "@mariozechner/pi-ai": "~0.67.3",
-    "zod": "^3"
+    "zod": "^3",
+    "zod-to-json-schema": "^3"
   },
   "devDependencies": {
     "@types/bun": "^1.1",

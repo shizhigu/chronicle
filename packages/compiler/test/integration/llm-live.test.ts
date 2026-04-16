@@ -18,8 +18,9 @@ import { lmStudioReady, resolveLmStudioModel } from './lmstudio-helper.js';
 // Probe once at module load time.
 const READY = await lmStudioReady();
 const MODEL = resolveLmStudioModel();
+const LIVE_TESTS_ENABLED = process.env.CHRONICLE_LIVE_TESTS === '1';
 
-describe.skipIf(!READY)('live LLM · LM Studio', () => {
+describe.skipIf(!READY || !LIVE_TESTS_ENABLED)('live LLM · LM Studio', () => {
   it('compiler LLM wrapper round-trips a short prompt', async () => {
     const llm = createLlm();
     // Reasoning-capable local models (Gemma w/ thinking, Qwen, DeepSeek-R1)

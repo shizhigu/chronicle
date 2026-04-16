@@ -28,6 +28,7 @@ import {
   type RuleEnforcer,
   type WorldStore,
 } from '@chronicle/engine';
+import { zodToJsonSchema } from 'zod-to-json-schema';
 import { type AnyAgentTool, type ExecutionContext, compileWorldTools } from './tools/compiler.js';
 
 // Lazy-load pi-agent so the runtime package is loadable without it (useful for tests).
@@ -305,26 +306,61 @@ export class AgentPool implements AgentRuntimeAdapter {
 
   /**
    * Wrap our internal tools so their execute() receives our ExecutionContext.
+   *
+   * Pi-agent expects `parameters: TSchema` (TypeBox JSON-schema) on the
+   * `Tool` interface, not `parametersSchema: ZodSchema`. TypeBox schemas
+   * are plain JSON Schema at runtime, so converting the Zod schema once
+   * and handing over the resulting JSON Schema is equivalent. Without
+   * this, pi-agent's schema validator blows up with
+   * `"schema must be object or boolean"` on the first tool invocation
+   * and the assistant message dies with `stopReason: 'error'`.
+   *
+   * The label + prepareArguments fields pi-agent's AgentTool wants are
+   * optional — omitting them is fine.
    */
   private wrapToolsForPi(tools: AnyAgentTool[], character: CharacterState) {
-    return tools.map((tool) => ({
-      name: tool.name,
-      description: tool.description,
-      // pi-agent uses the schema to validate + serialize to LLM tool format
-      parametersSchema: tool.parametersSchema,
-      execute: async (args: unknown) => {
-        const fresh = await this.opts.store.getAgent(character.id);
-        this.characters.set(character.id, fresh);
-        const ctx: ExecutionContext = {
-          world: this.world,
-          character: fresh,
-          tick: this.world.currentTick + 1, // in-progress tick
-          store: this.opts.store,
-          memory: this.memory,
-        };
-        return tool.execute(args as any, ctx);
-      },
-    }));
+    return tools.map((tool) => {
+      const parameters = zodToJsonSchema(tool.parametersSchema, {
+        // Inline everything — pi-agent's validator doesn't follow $refs,
+        // so a nested ref would reproduce the same "schema must be
+        // object or boolean" failure one level deeper.
+        $refStrategy: 'none',
+        target: 'openApi3',
+      }) as Record<string, unknown>;
+      return {
+        name: tool.name,
+        description: tool.description,
+        parameters,
+        // We also keep the original Zod schema under parametersSchema
+        // so anything in our codebase that still reads it (tests, etc.)
+        // keeps working.
+        parametersSchema: tool.parametersSchema,
+        execute: async (args: unknown) => {
+          const fresh = await this.opts.store.getAgent(character.id);
+          this.characters.set(character.id, fresh);
+          const ctx: ExecutionContext = {
+            world: this.world,
+            character: fresh,
+            tick: this.world.currentTick + 1, // in-progress tick
+            store: this.opts.store,
+            memory: this.memory,
+          };
+          const raw = await tool.execute(args as any, ctx);
+          // Chronicle tools return `{ ok, detail?, sideEffects? }` (our
+          // in-house ExecuteResult). Pi-agent-core expects
+          // `AgentToolResult<T> = { content: Block[], details: T }`
+          // — without it, the agent loop throws
+          // "undefined is not an object (evaluating 'toolMsg.content.filter')"
+          // while trying to render the tool result back to the model
+          // and the whole turn dies. Wrap once, right here, so
+          // individual tool implementations don't need to care.
+          return {
+            content: [{ type: 'text' as const, text: raw.detail ?? (raw.ok ? 'ok' : 'failed') }],
+            details: raw,
+          };
+        },
+      };
+    });
   }
 }
 
@@ -408,6 +444,19 @@ function extractToolCall(assistantMessage: any, actorId: string): ProposedAction
   const content = assistantMessage?.content;
   if (!Array.isArray(content)) return null;
   for (const block of content) {
+    // pi-agent-core emits `{ type: 'toolCall', name, arguments }` (see
+    // AgentToolCall in its types.d.ts). Older parts of our codebase
+    // still reference the Anthropic-style `{ type: 'tool_use', name,
+    // input }` so we accept both — dropping the old path would break
+    // existing test fixtures until they're migrated.
+    if (block?.type === 'toolCall' && typeof block.name === 'string') {
+      return {
+        agentId: actorId,
+        actionName: block.name,
+        args: (block.arguments as Record<string, unknown>) ?? {},
+        proposedAt: Date.now(),
+      };
+    }
     if (block?.type === 'tool_use' && typeof block.name === 'string') {
       return {
         agentId: actorId,
