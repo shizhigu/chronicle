@@ -34,6 +34,7 @@ import { listCommand } from './commands/list.js';
 import { registerOnboardCommand } from './commands/onboard.js';
 import { runCommand } from './commands/run.js';
 import { watchCommand } from './commands/watch.js';
+import { summariseError } from './errors.js';
 
 const program = new Command()
   .name('chronicle')
@@ -110,29 +111,3 @@ program.parseAsync(process.argv).catch((err) => {
 END_NEXT_STEPS`);
   process.exit(1);
 });
-
-/**
- * Human-readable one-liner for an error. Especially: turn a raw ZodError's
- * multi-issue JSON dump into a prose summary so the user sees
- * "Compiler output had 2 schema violations (rules[0].scope expected object,
- * got string; ...)" instead of a 30-line structured log.
- */
-function summariseError(err: unknown): string {
-  if (!err) return 'Unknown error';
-  // ZodError duck-type — avoids importing zod into the entry point.
-  const maybeZod = err as { name?: string; issues?: Array<{ path?: unknown[]; message?: string }> };
-  if (maybeZod.name === 'ZodError' && Array.isArray(maybeZod.issues)) {
-    const issues = maybeZod.issues.slice(0, 3);
-    const parts = issues.map((i) => {
-      const path = Array.isArray(i.path) && i.path.length > 0 ? i.path.join('.') : '<root>';
-      return `${path}: ${i.message ?? 'invalid'}`;
-    });
-    const more =
-      maybeZod.issues.length > issues.length
-        ? ` (+${maybeZod.issues.length - issues.length} more)`
-        : '';
-    return `Schema validation failed — ${parts.join('; ')}${more}. This usually means the model returned a shape the compiler couldn't parse; retrying often helps on small models.`;
-  }
-  if (err instanceof Error) return err.message;
-  return String(err);
-}

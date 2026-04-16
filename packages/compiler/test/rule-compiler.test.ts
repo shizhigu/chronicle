@@ -125,4 +125,77 @@ describe('RuleCompiler', () => {
     expect(rule.tier).toBe('soft');
     expect(rule.compilerNotes).toContain('ambiguous');
   });
+
+  // ============================================================
+  // Robustness to LLM slop in the optional `scope` field.
+  //
+  // In the wild, small models routinely return `scope` as a prose string
+  // ("applies to all agents") or an array instead of the expected object.
+  // That used to crash the compile with a Zod dump; now we preprocess
+  // non-object values to undefined and keep going.
+  // ============================================================
+
+  it('survives LLM returning scope as a string (used to crash with Zod dump)', async () => {
+    let callIdx = 0;
+    const sequence = [
+      JSON.stringify({ tier: 'soft' }),
+      JSON.stringify({
+        normText: "Don't lie to allies",
+        detectionPrompt: 'Did the speaker lie?',
+        consequence: 'trust decreases',
+        scope: 'applies to everyone', // <— wrong shape; used to crash
+      }),
+    ];
+    const llm: Llm = {
+      async call() {
+        return sequence[callIdx++]!;
+      },
+    };
+    const compiler = new RuleCompiler({ llm });
+    const rule = await compiler.compileOne('chr_test', 'Lying damages trust');
+    expect(rule.tier).toBe('soft');
+    // scope silently dropped — rule still compiles
+    expect(rule.scope).toBeUndefined();
+  });
+
+  it('survives LLM returning scope as an array', async () => {
+    let callIdx = 0;
+    const sequence = [
+      JSON.stringify({ tier: 'economic' }),
+      JSON.stringify({
+        appliesToAction: 'craft',
+        costs: { wood: 5 },
+        scope: ['everyone', 'always'], // <— also wrong shape
+      }),
+    ];
+    const llm: Llm = {
+      async call() {
+        return sequence[callIdx++]!;
+      },
+    };
+    const compiler = new RuleCompiler({ llm });
+    const rule = await compiler.compileOne('chr_test', 'Crafting costs 5 wood');
+    expect(rule.tier).toBe('economic');
+    expect(rule.scope).toBeUndefined();
+  });
+
+  it('preserves scope when LLM correctly returns an object', async () => {
+    let callIdx = 0;
+    const sequence = [
+      JSON.stringify({ tier: 'hard' }),
+      JSON.stringify({
+        predicate: 'cannot act while dead',
+        check: 'character.alive',
+        scope: { locationIds: ['loc_market'] }, // <— correct shape
+      }),
+    ];
+    const llm: Llm = {
+      async call() {
+        return sequence[callIdx++]!;
+      },
+    };
+    const compiler = new RuleCompiler({ llm });
+    const rule = await compiler.compileOne('chr_test', "Dead can't act in the market");
+    expect(rule.scope).toEqual({ locationIds: ['loc_market'] });
+  });
 });

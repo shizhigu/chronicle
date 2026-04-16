@@ -72,12 +72,14 @@ export async function setConfigValue(key: string, value: string): Promise<void> 
   const cfg = await loadConfig();
   // Support dotted keys like "providers.anthropic.apiKey"
   const parts = key.split('.');
-  // biome-ignore lint/suspicious/noExplicitAny: dotted-key walker needs dynamic indexing
-  let target: any = cfg;
+  let target = cfg as unknown as Record<string, unknown>;
   for (let i = 0; i < parts.length - 1; i++) {
     const p = parts[i]!;
-    if (!target[p] || typeof target[p] !== 'object') target[p] = {};
-    target = target[p];
+    const child = target[p];
+    if (!child || typeof child !== 'object' || Array.isArray(child)) {
+      target[p] = {};
+    }
+    target = target[p] as Record<string, unknown>;
   }
   target[parts[parts.length - 1]!] = value;
   await saveConfig(cfg);

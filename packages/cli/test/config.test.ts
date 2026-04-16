@@ -19,7 +19,8 @@ const TMP_HOME = mkdtempSync(join(tmpdir(), 'chronicle-cfg-'));
 process.env.CHRONICLE_HOME = TMP_HOME;
 
 // Dynamic import after env is set, so paths.ts picks up our tmpdir.
-const { loadConfig, saveConfig, setConfigValue } = await import('../src/config.js');
+const { loadConfig, resolveDefaultModel, resolveReflectionModel, saveConfig, setConfigValue } =
+  await import('../src/config.js');
 const { paths } = await import('../src/paths.js');
 
 describe('config loader', () => {
@@ -75,5 +76,70 @@ describe('config loader', () => {
     await loadConfig(); // recreates default
     const raw = await readFile(paths.config, 'utf-8');
     expect(raw).not.toContain('sk-');
+  });
+});
+
+describe('resolveReflectionModel (the "reflection fallback was dead code" bug)', () => {
+  it('falls back to default when reflection keys are UNSET', () => {
+    const cfg = {
+      defaultProvider: 'lmstudio',
+      defaultModel: 'google/gemma-4-e4b',
+      providers: {},
+      telemetryEnabled: true,
+    } as Parameters<typeof resolveReflectionModel>[0];
+    const r = resolveReflectionModel(cfg);
+    expect(r.provider).toBe('lmstudio');
+    expect(r.modelId).toBe('google/gemma-4-e4b');
+  });
+
+  it('falls back to default when reflection keys are EMPTY STRINGS', () => {
+    // This was the exact regression: old onboard wrote ""-placeholders, and
+    // `?? defaultProvider` treated "" as set. Now it doesn't.
+    const cfg = {
+      defaultProvider: 'lmstudio',
+      defaultModel: 'google/gemma-4-e4b',
+      reflectionProvider: '',
+      reflectionModel: '',
+      providers: {},
+      telemetryEnabled: true,
+    } as Parameters<typeof resolveReflectionModel>[0];
+    const r = resolveReflectionModel(cfg);
+    expect(r.provider).toBe('lmstudio');
+    expect(r.modelId).toBe('google/gemma-4-e4b');
+  });
+
+  it('uses reflection values when BOTH are explicitly set', () => {
+    const cfg = {
+      defaultProvider: 'lmstudio',
+      defaultModel: 'gemma-4b',
+      reflectionProvider: 'anthropic',
+      reflectionModel: 'claude-opus-4-6',
+      providers: {},
+      telemetryEnabled: true,
+    } as Parameters<typeof resolveReflectionModel>[0];
+    const r = resolveReflectionModel(cfg);
+    expect(r.provider).toBe('anthropic');
+    expect(r.modelId).toBe('claude-opus-4-6');
+  });
+
+  it('throws a CLEAR error when neither reflection nor default is set', () => {
+    const cfg = {
+      providers: {},
+      telemetryEnabled: true,
+    } as Parameters<typeof resolveReflectionModel>[0];
+    expect(() => resolveReflectionModel(cfg)).toThrow(/chronicle onboard/);
+    expect(() => resolveReflectionModel(cfg)).toThrow(/defaultProvider/);
+  });
+});
+
+describe('resolveDefaultModel', () => {
+  it('rejects empty-string placeholders (they were never a valid choice)', () => {
+    const cfg = {
+      defaultProvider: '',
+      defaultModel: '',
+      providers: {},
+      telemetryEnabled: true,
+    } as Parameters<typeof resolveDefaultModel>[0];
+    expect(() => resolveDefaultModel(cfg)).toThrow();
   });
 });
