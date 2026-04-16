@@ -320,7 +320,9 @@ describe('Engine — shared-store tick loop (authoritative)', () => {
 
     const sharedBus = new EventBus();
     const collected: BusEvent[] = [];
-    sharedBus.subscribe((e) => collected.push(e));
+    sharedBus.subscribe((e) => {
+      collected.push(e);
+    });
 
     const runtime = new MockRuntime();
     const engine = new Engine({

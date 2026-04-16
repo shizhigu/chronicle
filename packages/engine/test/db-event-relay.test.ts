@@ -52,7 +52,9 @@ describe('DbEventRelay', () => {
     aliceId = agentId();
     bus = new EventBus();
     captured = [];
-    bus.subscribe((e) => captured.push(e));
+    bus.subscribe((e) => {
+      captured.push(e);
+    });
   });
 
   it('starts at the current high-water mark so existing events are not replayed', async () => {

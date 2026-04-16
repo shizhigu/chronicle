@@ -9,7 +9,6 @@ import { describe, expect, it } from 'bun:test';
 import type {
   AgreementStatus,
   EventType,
-  MemoryType,
   ModelTier,
   RuleTier,
   ThinkingLevel,
@@ -31,10 +30,10 @@ describe('core types — discriminated unions', () => {
     expect(vs.length).toBeGreaterThanOrEqual(9);
   });
 
-  it('MemoryType covers all memory kinds', () => {
-    const vs: MemoryType[] = ['observation', 'reflection', 'goal', 'belief_about_other', 'thought'];
-    expect(vs.length).toBe(5);
-  });
+  // MemoryType was removed when memory moved out of the DB into the
+  // file-backed MemoryFileStore (hermes §-delimited format). The
+  // stable enum no longer exists — memories are just paragraphs in
+  // a markdown file — so there's nothing to assert.
 
   it('ModelTier names are stable', () => {
     const vs: ModelTier[] = ['haiku', 'sonnet', 'opus'];

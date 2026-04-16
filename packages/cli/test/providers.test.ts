@@ -40,7 +40,10 @@ function rejectingFetch(): typeof globalThis.fetch {
 function stubFetch(
   responses: Record<string, { status?: number; body?: unknown } | undefined>,
 ): typeof globalThis.fetch {
-  return (async (input: RequestInfo | URL) => {
+  // `RequestInfo` is a DOM lib type that isn't pulled in under our
+  // strict node TS config. Bun's fetch accepts `string | URL | Request`
+  // so narrow to that set — the runtime behavior is identical.
+  return (async (input: string | URL | Request) => {
     const url = typeof input === 'string' ? input : input.toString();
     const hit = responses[url];
     if (!hit) throw new Error(`unexpected fetch: ${url}`);

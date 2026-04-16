@@ -151,10 +151,14 @@ describe('catalog × llm.ts integration', () => {
 
     for (const spec of eligible) {
       const model = buildOpenAiCompatModel(spec, 'probe-model', {});
+      // `eligible` is already filtered to specs with a non-empty
+      // baseUrlDefault above, so the `?? ''` isn't reachable —
+      // this exists only to satisfy TS's `string | undefined`
+      // narrowing on the spec type.
       expect(
         model.baseUrl,
         `provider '${spec.id}' did not produce a base URL in hand-built model`,
-      ).toBe(spec.baseUrlDefault);
+      ).toBe(spec.baseUrlDefault ?? '');
       expect(model.api).toBe('openai-completions');
     }
   });
