@@ -55,6 +55,32 @@ Each character in a simulation owns one long-lived `Agent` instance from pi-agen
 - A standard agent protocol (like Model Context Protocol) matures enough that building directly on it is simpler than going through a wrapper.
 - Our tool-call hooks need something pi-agent cannot do and the author declines to accept a PR.
 
+## Fork vs. depend — explicit criteria
+
+pi-agent is pre-1.0 (version 0.67.x at time of writing) and maintained primarily by a single author. We keep the dependency **external** as long as:
+
+1. Releases continue at their historical cadence (several per month).
+2. Breaking changes arrive with migration notes we can adopt within a week.
+3. The MIT license remains.
+4. `beforeToolCall` / `afterToolCall` / `subscribe` / `sessionId` contracts stay compatible.
+
+We **fork** to `@chronicle/pi-agent-fork` only if two or more triggers fire:
+
+| Trigger | Threshold |
+|---|---|
+| No upstream release | 6 months AND a critical bug affecting us is open |
+| Breaking API change | rejects our migration path AND we cannot work around it |
+| License change | away from MIT / Apache 2.0 / BSD |
+| Internal surgery required | we need to patch internals and a PR is declined for 30 days |
+| Security advisory upstream | unaddressed for 14 days |
+
+**Hedges in place today:**
+
+- `AgentRuntimeAdapter` interface (`packages/engine/src/engine.ts`) — pi-agent is only referenced through the `AgentPool` that implements this interface. Replacing the backend is a single-package swap, not a codebase rewrite.
+- Version pinned to `~0.67.3` in `packages/runtime/package.json` and `packages/compiler/package.json` — patch bumps auto-apply; minor bumps get review.
+- Dynamic import inside `loadPi()` — unit tests run without the dep installed, so we are never held hostage by a single upstream release that breaks test setup.
+- Integration test coverage exercises the pi-agent interface shape; an upstream breaking change is caught in CI rather than in production.
+
 ## Related
 
 - [`docs/AGENT_RUNTIME.md`](../AGENT_RUNTIME.md) — the full design of the agent runtime.

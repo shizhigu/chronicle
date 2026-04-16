@@ -156,30 +156,7 @@ export function MapCanvas({ width, height, agents, locations, events, atmosphere
 
         {/* Location tiles */}
         {locations.map((loc) => (
-          <>
-            <Rect
-              key={`tile-${loc.id}`}
-              x={loc.x}
-              y={loc.y}
-              width={loc.width}
-              height={loc.height}
-              stroke={atmosphere.tile}
-              strokeWidth={1}
-              dash={[4, 4]}
-              opacity={0.6}
-              cornerRadius={4}
-            />
-            <Text
-              key={`label-${loc.id}`}
-              x={loc.x + 8}
-              y={loc.y + 8}
-              text={loc.name.toUpperCase()}
-              fontSize={10}
-              fontFamily="ui-monospace, Menlo, monospace"
-              fill={atmosphere.tile}
-              opacity={0.7}
-            />
-          </>
+          <LocationTileVisual key={loc.id} loc={loc} stroke={atmosphere.tile} />
         ))}
 
         {/* Agents — circle + name label */}
@@ -218,22 +195,70 @@ export function MapCanvas({ width, height, agents, locations, events, atmosphere
 
         {/* Catalyst / god flash */}
         {flash && (
-          <>
-            <Rect x={0} y={0} width={width} height={height} fill={atmosphere.flash} opacity={0.2} />
-            <Text
-              x={20}
-              y={height - 64}
-              width={width - 40}
-              text={`⚡ ${flash.description}`}
-              fontSize={14}
-              fontFamily="ui-sans-serif, system-ui"
-              fill={atmosphere.accent}
-              opacity={1}
-            />
-          </>
+          <FlashOverlay
+            width={width}
+            height={height}
+            description={flash.description}
+            atmosphere={atmosphere}
+          />
         )}
       </Layer>
     </Stage>
+  );
+}
+
+function LocationTileVisual({ loc, stroke }: { loc: LocationTile; stroke: string }) {
+  return (
+    <>
+      <Rect
+        x={loc.x}
+        y={loc.y}
+        width={loc.width}
+        height={loc.height}
+        stroke={stroke}
+        strokeWidth={1}
+        dash={[4, 4]}
+        opacity={0.6}
+        cornerRadius={4}
+      />
+      <Text
+        x={loc.x + 8}
+        y={loc.y + 8}
+        text={loc.name.toUpperCase()}
+        fontSize={10}
+        fontFamily="ui-monospace, Menlo, monospace"
+        fill={stroke}
+        opacity={0.7}
+      />
+    </>
+  );
+}
+
+function FlashOverlay({
+  width,
+  height,
+  description,
+  atmosphere,
+}: {
+  width: number;
+  height: number;
+  description: string;
+  atmosphere: AtmosphereTheme;
+}) {
+  return (
+    <>
+      <Rect x={0} y={0} width={width} height={height} fill={atmosphere.flash} opacity={0.2} />
+      <Text
+        x={20}
+        y={height - 64}
+        width={width - 40}
+        text={`⚡ ${description}`}
+        fontSize={14}
+        fontFamily="ui-sans-serif, system-ui"
+        fill={atmosphere.accent}
+        opacity={1}
+      />
+    </>
   );
 }
 

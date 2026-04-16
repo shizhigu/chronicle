@@ -55,6 +55,7 @@ A superseded ADR has a link to the ADR that replaced it. A replacing ADR has a l
 | 0005 | [Three-tier rule system: hard, soft, economic](0005-three-tier-rules.md) | accepted |
 | 0006 | [TypeScript strict mode, all the way down](0006-typescript-strict.md) | accepted |
 | 0007 | [Natural language is the primary configuration surface](0007-natural-language-config.md) | accepted |
+| 0008 | [Predicate DSL grammar scope — what's in, what's out](0008-dsl-grammar-scope.md) | accepted |
 
 ---
 
