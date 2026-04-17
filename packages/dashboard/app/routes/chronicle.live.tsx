@@ -28,7 +28,21 @@ type WireEvent =
     }
   | { type: 'god_intervention_applied'; tick: number; description: string }
   | { type: 'char_thinking'; agentId: string; delta: unknown }
-  | { type: 'catalyst'; tick: number; description: string };
+  | { type: 'catalyst'; tick: number; description: string }
+  // Lifecycle events the DbEventRelay surfaces; without these the UI
+  // silently drops any agent death or proposal resolution. Pinning
+  // the shapes here keeps the WS consumer exhaustive.
+  | { type: 'death'; tick: number; agentId: string; reason: string }
+  | { type: 'budget_exceeded' }
+  | {
+      type: 'proposal_adopted';
+      proposalId: string;
+      detail: string;
+      effectResults: { ok: boolean; detail: string }[];
+    }
+  | { type: 'proposal_rejected'; proposalId: string; detail: string }
+  | { type: 'proposal_expired'; proposalId: string; detail: string }
+  | { type: 'proposal_withdrawn'; proposalId: string; detail: string };
 
 const CANVAS_WIDTH = 900;
 const CANVAS_HEIGHT = 560;
@@ -186,6 +200,30 @@ function EventLine({ ev }: { ev: WireEvent }) {
       return <span className="text-gold/80">✨ {ev.description}</span>;
     case 'char_thinking':
       return <span className="text-cream/40">… {ev.agentId.slice(-4)} thinking</span>;
+    case 'death':
+      return (
+        <span className="text-red-400">
+          ☠ {ev.agentId.slice(-4)} died (tick {ev.tick}): {ev.reason}
+        </span>
+      );
+    case 'budget_exceeded':
+      return <span className="text-red-400">💸 budget exceeded — simulation paused</span>;
+    case 'proposal_adopted':
+      return (
+        <span className="text-gold">
+          ✔ proposal {ev.proposalId.slice(-6)} adopted · {ev.detail}
+        </span>
+      );
+    case 'proposal_rejected':
+      return (
+        <span className="text-red-400/80">
+          ✘ proposal {ev.proposalId.slice(-6)} rejected · {ev.detail}
+        </span>
+      );
+    case 'proposal_expired':
+      return <span className="text-cream/40">⏳ proposal {ev.proposalId.slice(-6)} expired</span>;
+    case 'proposal_withdrawn':
+      return <span className="text-cream/40">↩ proposal {ev.proposalId.slice(-6)} withdrawn</span>;
     default:
       return <>{JSON.stringify(ev).slice(0, 80)}</>;
   }
