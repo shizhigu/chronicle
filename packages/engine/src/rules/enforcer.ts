@@ -276,6 +276,21 @@ export class RuleEnforcer {
   ): Promise<ValidationResult> {
     if (!rule.hardCheck) return { ok: true };
 
+    // LLM-compiled rules sometimes reference world fields that don't
+    // exist (e.g. the Snowbound Inn compile emitted
+    // `world.suspicion_level >= 10 && …`). Our predicate evaluator
+    // then reads undefined, evaluates `undefined >= 10` as false, and
+    // the whole clause becomes false — so EVERY action is blocked by
+    // the rule. The simulation silently dies. Pre-scan the check
+    // expression for path roots we don't recognise; if the rule
+    // depends on state we don't own, mark it non-applicable for this
+    // action and allow the action through. (Real bug in the rule
+    // compiler that deserves its own fix; this is a safety net so
+    // broken compiles can't kill a run.)
+    if (!checkReferencesKnownFieldsOnly(rule.hardCheck)) {
+      return { ok: true };
+    }
+
     // hardCheck is a mini-DSL evaluated against character + action + world
     const ok = evaluateHardPredicate(rule.hardCheck, { character, action, world: this.world });
     if (ok) return { ok: true };
@@ -388,6 +403,75 @@ async function autoCorrectAction(
 ): Promise<{ args: Record<string, unknown> } | null> {
   // Stub — for specific known rules, apply known corrections
   return null;
+}
+
+// Whitelists of the only top-level paths our runtime context exposes.
+// Used by the hard-rule safety net to detect when an LLM-compiled check
+// references fields we can't populate (e.g. `world.suspicion_level`).
+// Keep these in sync with `evaluateHardPredicate`'s context builder.
+const KNOWN_WORLD_FIELDS = new Set([
+  'id',
+  'name',
+  'description',
+  'systemPrompt',
+  'config',
+  'currentTick',
+  'status',
+  'godBudgetTokens',
+  'tokensUsed',
+  'tickDurationDescription',
+  'dayNightCycleTicks',
+  'createdAt',
+  'createdByChronicle',
+  'forkFromTick',
+  'rngSeed',
+]);
+const KNOWN_CHARACTER_FIELDS = new Set([
+  'id',
+  'worldId',
+  'name',
+  'persona',
+  'traits',
+  'privateState',
+  'alive',
+  'locationId',
+  'mood',
+  'energy',
+  'health',
+  'tokensBudget',
+  'tokensSpent',
+  'sessionId',
+  'modelTier',
+  'provider',
+  'modelId',
+  'thinkingLevel',
+  'birthTick',
+  'deathTick',
+  'parentIds',
+  'createdAt',
+  'lastActiveTick',
+]);
+const KNOWN_ACTION_FIELDS = new Set(['name', 'args', 'agentId', 'proposedAt']);
+
+/**
+ * Return true iff every `world.<x>` / `character.<x>` / `action.<x>`
+ * reference in `expr` names a field we actually populate in the
+ * predicate context. Uses a cheap regex — intentionally permissive
+ * on edge cases (method chains, indexers) since the alternative is
+ * wrongly blocking real actions. False only when we're confident the
+ * rule can't be evaluated usefully.
+ */
+function checkReferencesKnownFieldsOnly(expr: string): boolean {
+  const matches = expr.matchAll(/\b(world|character|action)\.([a-zA-Z_][a-zA-Z0-9_]*)/g);
+  for (const m of matches) {
+    const root = m[1];
+    const field = m[2];
+    if (!field) continue;
+    if (root === 'world' && !KNOWN_WORLD_FIELDS.has(field)) return false;
+    if (root === 'character' && !KNOWN_CHARACTER_FIELDS.has(field)) return false;
+    if (root === 'action' && !KNOWN_ACTION_FIELDS.has(field)) return false;
+  }
+  return true;
 }
 
 function parsePenalty(s: string): ValidationResult['cost'] {

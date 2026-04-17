@@ -156,6 +156,67 @@ beforeEach(async () => {
 });
 afterEach(() => store.close());
 
+describe('broken-compile safety net', () => {
+  it('treats hard_check that references unknown world fields as non-applicable (allows action)', async () => {
+    // Regression for the Snowbound Inn compile: the LLM emitted
+    // `world.suspicion_level >= 10 && ...` as a hard check. The world
+    // type has no `suspicion_level`, so `undefined >= 10` is false,
+    // so the check is false, so EVERY action was blocked. The
+    // enforcer now scans the expression for unknown top-level field
+    // names and treats the rule as non-applicable if any show up.
+    const brokenRule: Rule = {
+      id: ruleId(),
+      worldId: world.id,
+      description: 'references a phantom world field',
+      tier: 'hard',
+      hardPredicate: null,
+      hardCheck: 'world.suspicion_level >= 10 && action.name == "speak"',
+      hardOnViolation: 'reject',
+      active: true,
+      priority: 100,
+      scopeKind: 'world',
+      scopeRef: null,
+      createdAt: new Date().toISOString(),
+      createdByTick: null,
+      compilerNotes: null,
+    };
+    await store.createRule(brokenRule);
+    const enf = new RuleEnforcer(store, world);
+    const r = await enf.validate({ character: alice, action: proposedAction(alice) });
+    expect(r.ok).toBe(true);
+  });
+
+  it('still enforces hard checks that stay within known fields', async () => {
+    // Sanity: the safety net must NOT swallow legitimate rules. A check
+    // that only references known fields continues to gate the action.
+    const legitRule: Rule = {
+      id: ruleId(),
+      worldId: world.id,
+      description: 'no speaking while unconscious',
+      tier: 'hard',
+      hardPredicate: null,
+      hardCheck: 'character.alive && action.name == "speak"',
+      hardOnViolation: 'reject',
+      active: true,
+      priority: 100,
+      scopeKind: 'world',
+      scopeRef: null,
+      createdAt: new Date().toISOString(),
+      createdByTick: null,
+      compilerNotes: null,
+    };
+    await store.createRule(legitRule);
+    const enf = new RuleEnforcer(store, world);
+    // Alice alive → check passes → action allowed.
+    const ok = await enf.validate({ character: alice, action: proposedAction(alice) });
+    expect(ok.ok).toBe(true);
+    // Dead actor — check fails → action blocked.
+    const dead = { ...alice, alive: false };
+    const blocked = await enf.validate({ character: dead, action: proposedAction(dead) });
+    expect(blocked.ok).toBe(false);
+  });
+});
+
 describe('primary scope filtering', () => {
   it('world-scoped rule binds every actor', async () => {
     await store.createRule(alwaysRejectRule({ scopeKind: 'world', scopeRef: null }));

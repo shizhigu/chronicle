@@ -89,7 +89,17 @@ const CompiledWorldSchema = z.object({
           })
           .default({}),
         visibility: z.string().default('public'),
-        availableTo: z.array(z.string()).optional(), // character names, default all
+        // Small models often produce a bare string ("all", or a
+        // single character name) where the schema expects an array.
+        // Pre-coerce so one wobble in the output shape doesn't tank
+        // the whole world compile. Empty string / "all" normalise to
+        // undefined (= available to everyone).
+        availableTo: z.preprocess((v) => {
+          if (typeof v !== 'string') return v;
+          const s = v.trim();
+          if (s === '' || s.toLowerCase() === 'all') return undefined;
+          return [s];
+        }, z.array(z.string()).optional()) as z.ZodType<string[] | undefined>,
       }),
     )
     .default([]),
