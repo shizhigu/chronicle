@@ -69,10 +69,30 @@ export async function saveConfig(cfg: Config): Promise<void> {
   await writeFile(paths.config, JSON.stringify(cfg, null, 2));
 }
 
+// Keys that must never appear in a dotted config path. Walking into
+// them would poison the base Object prototype or traverse into
+// config sub-objects' internal machinery.
+const FORBIDDEN_KEY_PARTS = new Set(['__proto__', 'constructor', 'prototype']);
+
 export async function setConfigValue(key: string, value: string): Promise<void> {
   const cfg = await loadConfig();
   // Support dotted keys like "providers.anthropic.apiKey"
   const parts = key.split('.');
+  if (parts.length === 0 || parts.some((p) => p === '')) {
+    throw new CliError(
+      `config --set: invalid key '${key}' (empty segment or empty key)`,
+      ExitCode.Generic,
+    );
+  }
+  for (const p of parts) {
+    if (FORBIDDEN_KEY_PARTS.has(p)) {
+      throw new CliError(
+        `config --set: path segment '${p}' is reserved (prototype-pollution guard)`,
+        ExitCode.Generic,
+      );
+    }
+  }
+
   let target = cfg as unknown as Record<string, unknown>;
   for (let i = 0; i < parts.length - 1; i++) {
     const p = parts[i]!;
@@ -82,8 +102,53 @@ export async function setConfigValue(key: string, value: string): Promise<void> 
     }
     target = target[p] as Record<string, unknown>;
   }
-  target[parts[parts.length - 1]!] = value;
+
+  // Coerce the string value into the shape the target schema wants.
+  // CLI `--set` only ever gives us strings; without this, writing
+  // `defaultBudgetUsd=5` persists `"5"` (string) which then fails
+  // the Zod `z.number()` on next load and the CLI becomes unable
+  // to read its own config.
+  target[parts[parts.length - 1]!] = coerceValue(parts, value);
+
+  // Validate the whole config through ConfigSchema BEFORE persisting.
+  // If the new assignment produces an unreadable shape, reject here
+  // rather than writing a config loadConfig() will throw on next
+  // startup. The exceptions flow up with a clear Zod error message.
+  try {
+    ConfigSchema.parse(cfg);
+  } catch (err) {
+    const detail =
+      err instanceof z.ZodError ? err.issues.map((i) => i.message).join('; ') : String(err);
+    throw new CliError(
+      `config --set ${key}=${value}: resulting config would be invalid — ${detail}`,
+      ExitCode.Generic,
+    );
+  }
   await saveConfig(cfg);
+}
+
+function coerceValue(parts: string[], raw: string): unknown {
+  // Known numeric leaf paths. Kept small because the schema currently
+  // has only one number field; expand as ConfigSchema grows.
+  const leaf = parts[parts.length - 1] ?? '';
+  if (leaf === 'defaultBudgetUsd') {
+    const n = Number.parseFloat(raw);
+    if (!Number.isFinite(n)) {
+      throw new CliError(`config --set ${leaf}: expected a number, got '${raw}'`, ExitCode.Generic);
+    }
+    return n;
+  }
+  if (leaf === 'telemetryEnabled') {
+    const lower = raw.toLowerCase().trim();
+    if (lower === 'true' || lower === '1' || lower === 'yes') return true;
+    if (lower === 'false' || lower === '0' || lower === 'no') return false;
+    throw new CliError(
+      `config --set telemetryEnabled: expected boolean ('true'/'false'), got '${raw}'`,
+      ExitCode.Generic,
+    );
+  }
+  // Everything else is a string (provider id, model id, api-key envvar name, etc.)
+  return raw;
 }
 
 /**

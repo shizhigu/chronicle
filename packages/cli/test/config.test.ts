@@ -70,6 +70,46 @@ describe('config loader', () => {
     expect(after.providers.anthropic?.apiKey).toBe(before.providers.anthropic?.apiKey);
   });
 
+  it('setConfigValue rejects __proto__ / constructor / prototype in the path (pollution guard)', async () => {
+    await expect(setConfigValue('__proto__.polluted', 'yes')).rejects.toThrow(
+      /reserved.*prototype-pollution/,
+    );
+    await expect(setConfigValue('providers.constructor', 'x')).rejects.toThrow(/reserved/);
+    await expect(setConfigValue('providers.openai.prototype', 'x')).rejects.toThrow(/reserved/);
+  });
+
+  it('setConfigValue rejects empty-segment paths', async () => {
+    await expect(setConfigValue('', 'x')).rejects.toThrow(/empty/);
+    await expect(setConfigValue('foo..bar', 'x')).rejects.toThrow(/empty segment/);
+  });
+
+  it('setConfigValue coerces defaultBudgetUsd to a number and telemetryEnabled to a boolean', async () => {
+    await setConfigValue('defaultBudgetUsd', '5.50');
+    let cfg = await loadConfig();
+    expect(cfg.defaultBudgetUsd).toBe(5.5);
+
+    await setConfigValue('telemetryEnabled', 'false');
+    cfg = await loadConfig();
+    expect(cfg.telemetryEnabled).toBe(false);
+
+    await setConfigValue('telemetryEnabled', 'TRUE');
+    cfg = await loadConfig();
+    expect(cfg.telemetryEnabled).toBe(true);
+  });
+
+  it('setConfigValue rejects values that fail schema validation before writing', async () => {
+    // Before fix: this wrote `"not-a-number"` into a number field, then
+    // loadConfig() threw on every subsequent invocation and the CLI
+    // was bricked.
+    await expect(setConfigValue('defaultBudgetUsd', 'not-a-number')).rejects.toThrow(
+      /expected a number/,
+    );
+    await expect(setConfigValue('telemetryEnabled', 'maybe')).rejects.toThrow(/boolean/);
+    // Config file survives — loadConfig() still returns a readable config.
+    const cfg = await loadConfig();
+    expect(cfg).toBeDefined();
+  });
+
   it('does not write API keys to JSON without an explicit call', async () => {
     // Confirm the default-written file has no leaked key
     rmSync(paths.config);
