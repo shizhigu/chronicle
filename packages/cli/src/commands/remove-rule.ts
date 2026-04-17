@@ -14,6 +14,7 @@
 
 import type { Effect } from '@chronicle/core';
 import { GodService, WorldStore, validateEffects } from '@chronicle/engine';
+import { resolveApplyAt } from '../apply-at.js';
 import { printNextSteps } from '../output.js';
 import { paths } from '../paths.js';
 
@@ -41,7 +42,7 @@ export async function removeRuleCommand(
     }
 
     const god = new GodService(store);
-    const applyAt = opts.at ? Number.parseInt(opts.at, 10) : world.currentTick + 1;
+    const applyAt = resolveApplyAt(opts, world.currentTick);
     const id = await god.queue(world, `repeal rule ${ruleId}`, applyAt, [effect]);
 
     console.log(`✓ repeal of ${ruleId} queued for tick ${applyAt} (intervention #${id})`);

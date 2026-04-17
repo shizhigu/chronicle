@@ -3,6 +3,7 @@
  */
 
 import { GodService, WorldStore } from '@chronicle/engine';
+import { resolveApplyAt } from '../apply-at.js';
 import { printNextSteps } from '../output.js';
 import { paths } from '../paths.js';
 
@@ -16,7 +17,7 @@ export async function interveneCommand(worldId: string, opts: Options): Promise<
   const world = await store.loadWorld(worldId);
   const god = new GodService(store);
 
-  const applyAt = opts.at ? Number.parseInt(opts.at, 10) : world.currentTick + 1;
+  const applyAt = resolveApplyAt(opts, world.currentTick);
   const id = await god.queue(world, opts.event, applyAt);
 
   console.log(`✓ Event queued for tick ${applyAt} (intervention #${id}):`);

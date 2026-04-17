@@ -13,6 +13,7 @@
 
 import type { Effect } from '@chronicle/core';
 import { GodService, WorldStore, validateEffects } from '@chronicle/engine';
+import { resolveApplyAt } from '../apply-at.js';
 import { printNextSteps } from '../output.js';
 import { paths } from '../paths.js';
 
@@ -71,7 +72,7 @@ export async function editCharacterCommand(
     }
 
     const god = new GodService(store);
-    const applyAt = opts.at ? Number.parseInt(opts.at, 10) : world.currentTick + 1;
+    const applyAt = resolveApplyAt(opts, world.currentTick);
     const description = summarizeEdit(target.name, effect);
 
     const id = await god.queue(world, description, applyAt, [effect]);

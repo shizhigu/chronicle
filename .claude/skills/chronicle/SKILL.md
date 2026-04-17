@@ -60,7 +60,6 @@ Do **not** invoke for generic software tasks unrelated to Chronicle.
 | Export a run | `chronicle export <id> --out <file.chronicle>` | |
 | Import a `.chronicle` | `chronicle import <file.chronicle>` | |
 | Fork at a tick | `chronicle fork <id> --at-tick <N> --desc "what's different"` | |
-| Replay a recorded run | `chronicle replay <id>` | |
 | Diagnostics | `chronicle doctor` | Check config + credentials |
 | Credentials | `chronicle auth set <provider> --key <k>` | |
 

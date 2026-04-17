@@ -10,6 +10,7 @@
 
 import type { Effect } from '@chronicle/core';
 import { GodService, WorldStore, validateEffects } from '@chronicle/engine';
+import { resolveApplyAt } from '../apply-at.js';
 import { printNextSteps } from '../output.js';
 import { paths } from '../paths.js';
 
@@ -50,7 +51,7 @@ export async function addLocationCommand(worldId: string, opts: Options): Promis
     }
 
     const god = new GodService(store);
-    const applyAt = opts.at ? Number.parseInt(opts.at, 10) : world.currentTick + 1;
+    const applyAt = resolveApplyAt(opts, world.currentTick);
     const id = await god.queue(world, `add location "${opts.name}"`, applyAt, [effect]);
 
     console.log(`✓ location "${opts.name}" queued for tick ${applyAt} (intervention #${id})`);

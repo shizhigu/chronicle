@@ -12,11 +12,13 @@
  *   chronicle intervene <world_id> --event "..."
  *   chronicle export <world_id> --out file.chronicle
  *   chronicle import file.chronicle
- *   chronicle replay <world_id>
  *   chronicle fork <world_id> --at-tick N --desc "change"
- *   chronicle review <world_id>
  *   chronicle dashboard <world_id>
  *   chronicle config
+ *
+ * (Planned, not yet implemented: `replay`, `review`. These used to
+ * appear here but ran as `unknown command`; the docstring now mirrors
+ * the actual CLI surface.)
  *
  * All output includes a NEXT_STEPS block for Claude Code to parse.
  */

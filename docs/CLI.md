@@ -1,5 +1,19 @@
 # CLI Design — Claude Code-Guided Onboarding
 
+> **Status:** this document is the aspirational design spec, not a
+> current-command reference. For the subset actually implemented,
+> run `bun x chronicle --help` or see the CLI entry point's docstring
+> at `packages/cli/src/index.ts`. Sections below that describe
+> commands not yet shipped (`review`, `delete`, `pause`, `resume`,
+> `end`, `timeline`, `agent`, `query`, `edit-world`, `edit-rule`,
+> `add-character`, `remove-character`, `kill`, `spawn`, `replay`,
+> `publish`) are intentionally forward-looking design; the
+> implementation set currently covers world / run / intervene /
+> export-import-fork / dashboard / auth / doctor / add-{rule,
+> location, group, member} / remove-{rule, member} / dissolve-group
+> / list-{agents, rules, groups, locations} / edit-character /
+> grant-authority / apply-effect / onboard.
+
 ## Philosophy
 
 The user **never writes JSON or YAML**. They talk to Claude Code, which invokes our CLI. Our CLI is designed so that the responses are readable by Claude Code and guide it to the next helpful step.
@@ -11,14 +25,18 @@ Every CLI output ends with a `NEXT_STEPS` section in a machine-friendly format. 
 ## Installation
 
 ```bash
-# One-line install
-curl -sSL https://chronicle.sh/install | bash
-
-# Or pip
-pip install chronicle-sim
+# Actual install (current): from the monorepo root
+git clone https://github.com/shizhigu/chronicle
+cd chronicle
+bun install
+bun run build
+bun x chronicle            # one-off
+# or symlink: ln -s "$(pwd)/packages/cli/dist/index.js" ~/bin/chronicle
 ```
 
-Puts `chronicle` binary on PATH.
+> The `curl https://chronicle.sh/install` / `pip install chronicle-sim`
+> paths are planned (and once live, will match the shape above). For
+> the current alpha, use the local-clone route.
 
 ---
 
@@ -257,11 +275,11 @@ chronicle rule-add <world_id> --text "..."     # add rule mid-run
 ### Export / share / fork
 
 ```
-chronicle export <world_id> --out file.chronicle
-chronicle import file.chronicle
-chronicle replay <world_id>                    # play back imported
-chronicle fork <world_id> --at-tick N --desc "what to change"
-chronicle publish <file>                       # upload to chronicle.sh (if logged in)
+chronicle export <world_id> --out file.chronicle     # IMPLEMENTED
+chronicle import file.chronicle                       # IMPLEMENTED
+chronicle fork <world_id> [--at-tick N] --desc "..."  # IMPLEMENTED (current-state fork; time-rewind planned)
+chronicle replay <world_id>                           # planned
+chronicle publish <file>                              # planned
 ```
 
 ### Examples

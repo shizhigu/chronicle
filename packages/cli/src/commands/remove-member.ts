@@ -8,6 +8,7 @@
 
 import type { Effect } from '@chronicle/core';
 import { GodService, WorldStore, validateEffects } from '@chronicle/engine';
+import { resolveApplyAt } from '../apply-at.js';
 import { printNextSteps } from '../output.js';
 import { paths } from '../paths.js';
 import { resolveAgentRef, resolveGroupRef } from '../refs.js';
@@ -43,7 +44,7 @@ export async function removeMemberCommand(
     }
 
     const god = new GodService(store);
-    const applyAt = opts.at ? Number.parseInt(opts.at, 10) : world.currentTick + 1;
+    const applyAt = resolveApplyAt(opts, world.currentTick);
     const id = await god.queue(world, `remove ${agent.name} from group "${group.name}"`, applyAt, [
       effect,
     ]);
