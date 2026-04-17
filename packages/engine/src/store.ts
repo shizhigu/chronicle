@@ -610,6 +610,20 @@ export class WorldStore {
       .where(eq(s.godInterventions.id, id));
   }
 
+  /**
+   * All god interventions for a world, applied + pending. Used by the
+   * export path so a mid-run snapshot preserves any queued CC edits
+   * (`chronicle intervene` / `apply-effect` / `edit-character`)
+   * alongside the rest of the world state.
+   */
+  async getAllInterventionsForWorld(worldId: string): Promise<GodIntervention[]> {
+    const rows = await this.orm
+      .select()
+      .from(s.godInterventions)
+      .where(eq(s.godInterventions.worldId, worldId));
+    return rows.map(mapInterventionFromRow);
+  }
+
   // ============================================================
   // SNAPSHOTS
   // ============================================================

@@ -72,6 +72,13 @@ export interface ExportBundle {
     proposalId: string;
     votes: Awaited<ReturnType<WorldStore['getVotesForProposal']>>;
   }>;
+  /**
+   * God interventions — applied and pending. Without these, a
+   * mid-run export loses any queued CC edits (`chronicle intervene`,
+   * `apply-effect`, `edit-character`, `add-rule`, etc.) and the
+   * restored world resumes as if those edits had never been typed.
+   */
+  interventions: Awaited<ReturnType<WorldStore['getAllInterventionsForWorld']>>;
   /** agentId → raw contents of that character's memory.md (may be ''). */
   memories: Record<string, string>;
 }
@@ -104,6 +111,7 @@ export async function exportCommand(worldId: string, opts: Options): Promise<voi
       votes: await store.getVotesForProposal(p.id),
     })),
   );
+  const interventions = await store.getAllInterventionsForWorld(worldId);
 
   // Read each character's memory file in parallel. MemoryFileStore.read
   // returns '' for characters who never wrote anything, so missing
@@ -141,6 +149,7 @@ export async function exportCommand(worldId: string, opts: Options): Promise<voi
     authorities,
     proposals,
     votes,
+    interventions,
     memories,
   };
 

@@ -80,6 +80,25 @@ export async function importCommand(file: string): Promise<void> {
     for (const v of votes) await store.castVote(v);
   }
 
+  // God interventions — both applied (history) and pending (queued
+  // CC edits that the restored world should pick up on its next
+  // tick). `queueIntervention` writes `applied: false` by default;
+  // for rows that were already applied pre-export, flip the flag
+  // back to applied so they don't re-fire on resume.
+  for (const iv of bundle.interventions ?? []) {
+    const newId = await store.queueIntervention({
+      worldId: iv.worldId,
+      queuedTick: iv.queuedTick,
+      applyAtTick: iv.applyAtTick,
+      description: iv.description,
+      compiledEffects: iv.compiledEffects,
+      notes: iv.notes,
+    });
+    if (iv.applied) {
+      await store.markInterventionApplied(newId);
+    }
+  }
+
   for (const e of bundle.events ?? []) {
     await store.recordEvent({
       worldId: e.worldId,

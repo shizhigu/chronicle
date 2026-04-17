@@ -298,6 +298,61 @@ describe('export → import round-trip', () => {
     expect(existsSync(exportFile)).toBe(true);
   });
 
+  it('round-trips god interventions — applied history + queued pending', async () => {
+    // Regression: pre-v3 export dropped god_interventions entirely, so
+    // a mid-run export after `chronicle intervene` / `apply-effect`
+    // silently lost the queued edits. The restored world would resume
+    // as if those edits had never been typed.
+    const { WorldStore: ES } = await import('@chronicle/engine');
+    const src = await ES.open(paths.db);
+    // Seed two interventions: one already applied (history), one still
+    // pending (should fire on the next tick of the restored world).
+    const appliedId = await src.queueIntervention({
+      worldId: world.id,
+      queuedTick: 5,
+      applyAtTick: 6,
+      description: 'historical event',
+      compiledEffects: null,
+      notes: null,
+    });
+    await src.markInterventionApplied(appliedId);
+    await src.queueIntervention({
+      worldId: world.id,
+      queuedTick: 10,
+      applyAtTick: 11,
+      description: 'queued but not yet applied',
+      compiledEffects: { effects: [] },
+      notes: null,
+    });
+    src.close();
+
+    await exportCommand(world.id, { out: exportFile });
+    const destHome = mkdtempSync(join(tmpdir(), 'chronicle-exim-iv-'));
+    process.env.CHRONICLE_HOME = destHome;
+    try {
+      await importCommand(exportFile);
+      const reopened = await ES.open(paths.db);
+
+      const all = await reopened.getAllInterventionsForWorld(world.id);
+      const descs = all.map((i) => i.description);
+      expect(descs).toContain('historical event');
+      expect(descs).toContain('queued but not yet applied');
+
+      // Applied-flag state round-trips — the historical one stays
+      // applied, the pending one is still pending so the engine
+      // picks it up on its next tick.
+      const historical = all.find((i) => i.description === 'historical event')!;
+      const pending = all.find((i) => i.description === 'queued but not yet applied')!;
+      expect(historical.applied).toBe(true);
+      expect(pending.applied).toBe(false);
+
+      reopened.close();
+    } finally {
+      process.env.CHRONICLE_HOME = tmpHome;
+      rmSync(destHome, { recursive: true, force: true });
+    }
+  });
+
   it('round-trips the governance layer (groups, memberships, authorities, proposals, votes)', async () => {
     // Regression for the pre-v3 gap: export dropped the entire political
     // layer. A world with a council + a granted authority + a vote cast
