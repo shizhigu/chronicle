@@ -25,7 +25,7 @@ import type {
   VoteStance,
   World,
 } from '@chronicle/core';
-import { groupId as newGroupId, proposalId as newProposalId } from '@chronicle/core';
+import { createRng, groupId as newGroupId, proposalId as newProposalId } from '@chronicle/core';
 import type { MemoryFileStore, WorldStore } from '@chronicle/engine';
 import { validateEffects } from '@chronicle/engine';
 import { z } from 'zod';
@@ -709,6 +709,21 @@ function defaultProcedureConfig(
   }
 }
 
+/**
+ * Cheap 32-bit FNV-1a hash — used to derive a per-resource seed for
+ * deterministic gather quantity. Not a cryptographic hash; we just
+ * need a stable integer from a string so the same resource id maps
+ * to the same RNG sub-stream across replays.
+ */
+function hashString(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h = (h ^ s.charCodeAt(i)) >>> 0;
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h;
+}
+
 async function resolveAgentByName(ctx: ExecutionContext, name: string): Promise<string | null> {
   const agents = await ctx.store.getLiveAgents(ctx.world.id);
   const found = agents.find((a) => a.name.toLowerCase() === name.toLowerCase());
@@ -824,7 +839,16 @@ async function executeGather(
   const resource = resources.find((r) => r.type.toLowerCase() === args.resource.toLowerCase());
   if (!resource || resource.quantity <= 0) return { ok: false, detail: 'not_available' };
 
-  const amount = Math.min(resource.quantity, 1 + Math.random() * 3);
+  // Deterministic quantity: gather between 1 and 3 units, derived from
+  // (world seed, tick, resource id) so byte-identical replay (ADR-0003)
+  // produces the same outcome. Previously `Math.random()` picked a
+  // different amount per replay, which then cascaded — downstream
+  // gather / transfer / give decisions diverged as inventory drifted.
+  const rng = createRng(
+    (ctx.world.rngSeed ^ ctx.tick ^ hashString(resource.id) ^ 0x9a7e5eed) >>> 0,
+  );
+  const rolled = 1 + rng.nextInt(0, 3); // 1..3 inclusive
+  const amount = Math.min(resource.quantity, rolled);
   await ctx.store.adjustResourceQuantity(resource.id, -amount);
 
   // Add to agent inventory (or create new owned resource)
