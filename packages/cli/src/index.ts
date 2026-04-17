@@ -35,6 +35,7 @@ import { dissolveGroupCommand } from './commands/dissolve-group.js';
 import { registerDoctorCommand } from './commands/doctor.js';
 import { editCharacterCommand } from './commands/edit-character.js';
 import { exportCommand } from './commands/export.js';
+import { forkCommand } from './commands/fork.js';
 import { grantAuthorityCommand } from './commands/grant-authority.js';
 import { importCommand } from './commands/import.js';
 import { interactiveInit } from './commands/interactive.js';
@@ -230,6 +231,13 @@ program
   .action(exportCommand);
 
 program.command('import <file>').description('Import a .chronicle file').action(importCommand);
+
+program
+  .command('fork <worldId>')
+  .description('Clone a world under a fresh id (forkFromTick pinned to at-tick or current)')
+  .requiredOption('--desc <text>', 'describe what the fork is exploring')
+  .option('--at-tick <n>', 'fork point (default: source world currentTick)')
+  .action(forkCommand);
 
 program
   .command('dashboard <worldId>')

@@ -389,10 +389,10 @@ describe('export → import round-trip', () => {
       holderRef: alice.id,
       powers: [{ kind: 'override_rule', ruleId: 'rul_x' }],
       grantedTick: 1,
-      grantedByEventId: null,
       expiresTick: null,
+      sourceEventId: null,
       revokedTick: null,
-      createdAt: new Date().toISOString(),
+      revocationEventId: null,
     });
     const propId = newProposalId();
     const dissolveEffect = { kind: 'dissolve_group' as const, groupId: councilId };

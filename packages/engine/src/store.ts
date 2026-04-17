@@ -1012,7 +1012,7 @@ export class WorldStore {
       .map((r) => ({
         fromId: r.fromLocationId,
         toId: r.toLocationId,
-        cost: r.cost,
+        cost: r.traversalCost,
         bidirectional: Boolean(r.bidirectional),
       }));
   }
