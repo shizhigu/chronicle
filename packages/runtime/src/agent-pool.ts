@@ -134,19 +134,56 @@ export class AgentPool implements AgentRuntimeAdapter {
     // pi-agent's prompt() drives the full tool loop. We wrap it in
     // retryWithBackoff (ADR-0013) so transient failures — 429s,
     // overloaded providers, timeouts, network glitches — don't silently
-    // gap out a character's turn. Non-retryable errors (auth, billing,
-    // format) short-circuit on attempt 1. All-fail path preserves the
-    // old TurnResult shape with a richer classified error string.
+    // gap out a character's turn.
+    //
+    // Caveat: pi-agent's stream contract is "never throw for
+    // request/model/runtime failures — encode them in the returned
+    // assistant message via `stopReason: 'error'` + errorMessage".
+    // If we only catch thrown errors, retryWithBackoff never triggers
+    // on the class of failures we most want to retry on. Inspect the
+    // assistant message produced this turn; if its stopReason is
+    // 'error', throw the embedded message ourselves so the classifier
+    // can decide retry vs. fail-fast. (Auth / billing / context
+    // overflow / format errors classify as non-retryable and
+    // short-circuit on attempt 1; 429 / network / timeout / generic
+    // server-error get the jittered-backoff treatment.)
     try {
-      await retryWithBackoff(() => instance.prompt(prompt), {
-        onRetry: (attempt, err, delayMs) => {
-          console.warn(
-            `[AgentPool] ${character.name} turn failed (${err.kind}): ${err.message}. ` +
-              `retry ${attempt} in ${Math.round(delayMs)}ms`,
-          );
+      await retryWithBackoff(
+        async () => {
+          await instance.prompt(prompt);
+          const msgs = (instance.state?.messages ?? []) as any[];
+          const last = msgs.length > 0 ? msgs[msgs.length - 1] : undefined;
+          // Walk backward for the most recent assistant message — the
+          // trailing message in a tool loop is often a toolResult.
+          let lastAssistant: any = null;
+          for (let i = msgs.length - 1; i >= messagesBefore; i--) {
+            if (msgs[i]?.role === 'assistant') {
+              lastAssistant = msgs[i];
+              break;
+            }
+          }
+          const target = lastAssistant ?? last;
+          if (target && target.stopReason === 'error') {
+            const err: Error & { status?: number } = new Error(
+              target.errorMessage ?? 'pi-agent stopReason:error',
+            );
+            // Pass through any HTTP status the transport surfaced so
+            // classifyError's structured path picks it up before
+            // falling back to message-substring matching.
+            if (typeof target.status === 'number') err.status = target.status;
+            throw err;
+          }
         },
-        ...this.opts.retryOptions,
-      });
+        {
+          onRetry: (attempt, err, delayMs) => {
+            console.warn(
+              `[AgentPool] ${character.name} turn failed (${err.kind}): ${err.message}. ` +
+                `retry ${attempt} in ${Math.round(delayMs)}ms`,
+            );
+          },
+          ...this.opts.retryOptions,
+        },
+      );
     } catch (err) {
       const classified = err as ClassifiedError;
       return {

@@ -500,6 +500,48 @@ describe('AgentPool — retry on transient provider failures (ADR-0013)', () => 
     expect(result.action).toBeNull();
     expect(result.error).toMatch(/rate_limit:/);
   });
+
+  it("detects pi-agent's stopReason:'error' assistant message and feeds it to the classifier", async () => {
+    // Pi-agent's stream contract is "never throw — encode failures in
+    // the returned AssistantMessage via stopReason:'error'". Without
+    // surfacing that into the retry loop, transient network/rate
+    // errors would silently become empty agent_silent turns with no
+    // retry. This test mimics a 429 response that pi-agent buried in
+    // the transcript, and verifies retryWithBackoff classifies it as
+    // rate_limit (retryable) and the turn ultimately fails with the
+    // right error kind.
+    const instances: FakeAgent[] = [];
+    const pool = new AgentPool({
+      store,
+      ruleEnforcer: enforcer,
+      events,
+      piLoader: async () => fakePiLoader(instances),
+      retryOptions: { maxAttempts: 2, baseDelayMs: 1, maxDelayMs: 2, sleep: async () => {} },
+    });
+    await pool.hydrate(world, [alice]);
+    const inst = instances[0]!;
+
+    let promptCalls = 0;
+    inst.prompt = async () => {
+      promptCalls++;
+      // Emulate pi-agent's buried-error shape: append an assistant
+      // message whose stopReason is 'error' + a messaged that the
+      // classifier's substring heuristics recognise as rate-limit.
+      (inst.state.messages as any[]).push({
+        role: 'assistant',
+        content: [],
+        stopReason: 'error',
+        errorMessage: 'request was throttled — rate limited by upstream',
+      });
+    };
+
+    const result = await pool.takeTurn(alice, makeObservation(1), 1);
+
+    // Retry fires despite prompt() never throwing.
+    expect(promptCalls).toBe(2);
+    expect(result.action).toBeNull();
+    expect(result.error).toMatch(/rate_limit:/);
+  });
 });
 
 describe('AgentPool — shutdown', () => {
