@@ -9,6 +9,8 @@
  */
 
 import type { World } from '@chronicle/core';
+import { createRng } from '@chronicle/core';
+import type { EventBus } from '../events/bus.js';
 import type { WorldStore } from '../store.js';
 
 const CATALYST_POOL: Record<string, string[]> = {
@@ -59,13 +61,19 @@ export class CatalystInjector {
   constructor(
     private store: WorldStore,
     private world: World,
+    private bus?: EventBus,
   ) {}
 
   async inject(world: World, tick: number): Promise<void> {
     const tag = world.config.atmosphereTag ?? 'default';
     const pool = CATALYST_POOL[tag] ?? CATALYST_POOL.default!;
-    const idx = Math.floor(Math.random() * pool.length);
-    const description = pool[idx]!;
+
+    // Previously used Math.random(), which breaks byte-identical
+    // replay (ADR-0003). Derive a tick-stable RNG from the world's
+    // seed so a re-run of the same event log picks the same
+    // catalyst line.
+    const rng = createRng(world.rngSeed ^ tick ^ 0xca7a1357);
+    const description = rng.pick(pool);
 
     await this.store.recordEvent({
       worldId: world.id,
@@ -74,6 +82,19 @@ export class CatalystInjector {
       actorId: null,
       data: { description, atmosphereTag: tag },
       tokenCost: 0,
+    });
+
+    // Emit to the in-process bus so same-process subscribers
+    // (`--until-event catalyst`, the `chronicle run --live` output,
+    // any test harness) see the catalyst as it fires. Cross-process
+    // subscribers (dashboard UI) still get it via DbEventRelay
+    // reading the events table.
+    this.bus?.emit({
+      type: 'catalyst',
+      worldId: world.id,
+      tick,
+      description,
+      atmosphereTag: tag,
     });
   }
 }

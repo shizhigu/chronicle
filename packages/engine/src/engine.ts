@@ -112,7 +112,7 @@ export class Engine {
     this.observations = new ObservationBuilder(this.store, this.world);
     this.memory = this.opts.memory ?? new MemoryFileStore();
     this.drama = new DramaDetector(this.store);
-    this.catalyst = new CatalystInjector(this.store, this.world);
+    this.catalyst = new CatalystInjector(this.store, this.world, this.events);
     this.god = new GodService(this.store);
     this.proposals = new ProposalService(this.store, this.events);
     this.activation = this.opts.activation ?? new ActivationService(this.store, this.world);

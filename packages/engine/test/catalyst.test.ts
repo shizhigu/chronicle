@@ -5,6 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { worldId } from '@chronicle/core';
 import type { World } from '@chronicle/core';
+import { EventBus } from '../src/events/bus.js';
 import { CatalystInjector } from '../src/narrative/catalyst.js';
 import { WorldStore } from '../src/store.js';
 
@@ -106,5 +107,43 @@ describe('CatalystInjector', () => {
     const all = await store.getEventsInRange(world.id, 0, 10);
     expect(all.length).toBe(3);
     expect(all.map((e) => e.tick)).toEqual([1, 2, 3]);
+  });
+
+  it('produces the same description for the same (seed, tick) — byte-identical replay', async () => {
+    // ADR-0003 commits to byte-identical replay from the same seed.
+    // Previously used Math.random() which broke that contract silently.
+    const tag = 'parlor_drama';
+    const seed = 0x5a17ed;
+    const worldA: World = { ...makeWorld(tag), id: 'chr_a' as any, rngSeed: seed };
+    const worldB: World = { ...makeWorld(tag), id: 'chr_b' as any, rngSeed: seed };
+    await store.createWorld(worldA);
+    await store.createWorld(worldB);
+
+    const injA = new CatalystInjector(store, worldA);
+    const injB = new CatalystInjector(store, worldB);
+    await injA.inject(worldA, 42);
+    await injB.inject(worldB, 42);
+
+    const aEvents = await store.getEventsInRange(worldA.id, 42, 42);
+    const bEvents = await store.getEventsInRange(worldB.id, 42, 42);
+    const aData = aEvents[0]?.data as { description: string };
+    const bData = bEvents[0]?.data as { description: string };
+    expect(aData.description).toBe(bData.description);
+  });
+
+  it('emits a catalyst BusEvent alongside the DB record', async () => {
+    world = makeWorld('medieval_court');
+    await store.createWorld(world);
+    const bus = new EventBus();
+    const captured: Array<{ type: string; description?: string }> = [];
+    bus.subscribe((e) => {
+      captured.push(e as any);
+    });
+    const injector = new CatalystInjector(store, world, bus);
+    await injector.inject(world, 7);
+
+    const catalystEvents = captured.filter((e) => e.type === 'catalyst');
+    expect(catalystEvents).toHaveLength(1);
+    expect(typeof catalystEvents[0]?.description).toBe('string');
   });
 });
