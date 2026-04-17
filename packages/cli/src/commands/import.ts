@@ -24,9 +24,62 @@ export async function importCommand(file: string): Promise<void> {
   const store = await WorldStore.open(paths.db);
 
   await store.createWorld(bundle.world);
+
+  // Core entities.
   for (const loc of bundle.locations ?? []) await store.createLocation(loc);
+  // Adjacencies come from a v3 bundle; v1/v2 archives omit them and
+  // restored worlds have an empty location graph (all destinations
+  // unreachable). Fall back to silent skip for legacy archives.
+  for (const adj of bundle.adjacencies ?? []) {
+    // `addAdjacency` writes one edge; `bidirectional=true` also
+    // writes the reverse edge, so pass `false` here to avoid
+    // double-inserting — we already have both directions in the
+    // exported list.
+    await store.addAdjacency(adj.fromId, adj.toId, adj.cost ?? 1, false);
+  }
   for (const a of bundle.agents ?? []) await store.createAgent(a);
   for (const r of bundle.rules ?? []) await store.createRule(r);
+
+  // World-specific compiled tools. Without these, schema-driven tools
+  // (`check_cellar`, scenario-invented actions) disappear after
+  // round-trip and the simulation behaves like a stripped-down
+  // version of the original. v1/v2 archives don't carry them.
+  for (const sch of bundle.actionSchemas ?? []) await store.createActionSchema(sch);
+
+  // Resources — location-held AND agent-held. Same schemaVersion gate.
+  for (const res of bundle.resources ?? []) await store.createResource(res);
+
+  // Governance snapshot (ADR-0009). v3+ archives include these; v1/v2
+  // drop them entirely, so a restored political world from a legacy
+  // archive has no groups / votes / authorities. We restore groups
+  // first so memberships can reference valid group ids.
+  for (const g of bundle.groups ?? []) await store.createGroup(g);
+  for (const { memberships = [] } of bundle.memberships ?? []) {
+    for (const m of memberships) {
+      try {
+        await store.addMembership(m.groupId, m.agentId, m.joinedTick);
+        if (m.leftTick != null) {
+          await store.removeMembership(m.groupId, m.agentId, m.leftTick);
+        }
+      } catch (err) {
+        // `addMembership` throws on duplicate — if somehow the
+        // archive has an overlapping active membership, skip it
+        // rather than fail the whole import.
+        console.warn(
+          `  ⚠ membership ${m.agentId} in ${m.groupId} skipped: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
+  for (const { roles = [] } of bundle.roles ?? []) {
+    for (const role of roles) await store.upsertGroupRole(role);
+  }
+  for (const auth of bundle.authorities ?? []) await store.grantAuthority(auth);
+  for (const p of bundle.proposals ?? []) await store.createProposal(p);
+  for (const { votes = [] } of bundle.votes ?? []) {
+    for (const v of votes) await store.castVote(v);
+  }
+
   for (const e of bundle.events ?? []) {
     await store.recordEvent({
       worldId: e.worldId,

@@ -31,10 +31,47 @@ export interface ExportBundle {
     rating: string;
   };
   world: Awaited<ReturnType<WorldStore['loadWorld']>>;
-  agents: Awaited<ReturnType<WorldStore['getLiveAgents']>>;
+  /** Includes dead agents so post-mortem replay works. */
+  agents: Awaited<ReturnType<WorldStore['getAllAgents']>>;
   locations: Awaited<ReturnType<WorldStore['getLocationsForWorld']>>;
+  /**
+   * Location graph edges. Without these the locations round-trip but
+   * every destination is unreachable — move actions fail with
+   * `not_adjacent` on the restored world.
+   */
+  adjacencies: Awaited<ReturnType<WorldStore['getAllAdjacencies']>>;
   rules: Awaited<ReturnType<WorldStore['getActiveRules']>>;
   events: Awaited<ReturnType<WorldStore['getRecentEvents']>>;
+  /**
+   * World-specific tools compiled from the scenario description. Core
+   * tools (observe/speak/think/…) are built at runtime; without
+   * restoring action_schemas, any schema-driven tool the scenario
+   * invented (e.g. `check_cellar` on the Snowbound Inn) disappears.
+   */
+  actionSchemas: Awaited<ReturnType<WorldStore['getActiveActionSchemas']>>;
+  /** Resource inventory — both location-held and agent-held. */
+  resources: Awaited<ReturnType<WorldStore['getAllResourcesForWorld']>>;
+  /**
+   * Governance snapshot (ADR-0009). Without these fields, exporting
+   * a world with a council / votes / granted authority silently
+   * drops the entire political layer. Groups include dissolved ones
+   * so the audit trail survives.
+   */
+  groups: Awaited<ReturnType<WorldStore['getGroupsForWorld']>>;
+  memberships: Array<{
+    groupId: string;
+    memberships: Awaited<ReturnType<WorldStore['getAllMembershipsForGroup']>>;
+  }>;
+  roles: Array<{
+    groupId: string;
+    roles: Awaited<ReturnType<WorldStore['getRolesForGroup']>>;
+  }>;
+  authorities: Awaited<ReturnType<WorldStore['getAllAuthoritiesForWorld']>>;
+  proposals: Awaited<ReturnType<WorldStore['getAllProposalsForWorld']>>;
+  votes: Array<{
+    proposalId: string;
+    votes: Awaited<ReturnType<WorldStore['getVotesForProposal']>>;
+  }>;
   /** agentId → raw contents of that character's memory.md (may be ''). */
   memories: Record<string, string>;
 }
@@ -42,10 +79,31 @@ export interface ExportBundle {
 export async function exportCommand(worldId: string, opts: Options): Promise<void> {
   const store = await WorldStore.open(paths.db);
   const world = await store.loadWorld(worldId);
-  const agents = await store.getLiveAgents(worldId);
+  const agents = await store.getAllAgents(worldId); // include dead
   const locations = await store.getLocationsForWorld(worldId);
+  const adjacencies = await store.getAllAdjacencies(worldId);
   const events = await store.getRecentEvents(worldId, 0);
   const rules = await store.getActiveRules(worldId);
+  const actionSchemas = await store.getActiveActionSchemas(worldId);
+  const resources = await store.getAllResourcesForWorld(worldId);
+  const groups = await store.getGroupsForWorld(worldId, /* includeDissolved */ true);
+  const memberships = await Promise.all(
+    groups.map(async (g) => ({
+      groupId: g.id,
+      memberships: await store.getAllMembershipsForGroup(g.id),
+    })),
+  );
+  const roles = await Promise.all(
+    groups.map(async (g) => ({ groupId: g.id, roles: await store.getRolesForGroup(g.id) })),
+  );
+  const authorities = await store.getAllAuthoritiesForWorld(worldId);
+  const proposals = await store.getAllProposalsForWorld(worldId);
+  const votes = await Promise.all(
+    proposals.map(async (p) => ({
+      proposalId: p.id,
+      votes: await store.getVotesForProposal(p.id),
+    })),
+  );
 
   // Read each character's memory file in parallel. MemoryFileStore.read
   // returns '' for characters who never wrote anything, so missing
@@ -59,7 +117,10 @@ export async function exportCommand(worldId: string, opts: Options): Promise<voi
 
   const bundle: ExportBundle = {
     manifest: {
-      schemaVersion: 2,
+      // Bumped 2 → 3 to signal that governance + adjacencies + resources
+      // + action_schemas + dead agents are now included. Importers that
+      // only understand v2 will still work for the overlapping subset.
+      schemaVersion: 3,
       exportedAt: new Date().toISOString(),
       worldId: world.id,
       worldName: world.name,
@@ -69,8 +130,17 @@ export async function exportCommand(worldId: string, opts: Options): Promise<voi
     world,
     agents,
     locations,
+    adjacencies,
     rules,
     events,
+    actionSchemas,
+    resources,
+    groups,
+    memberships,
+    roles,
+    authorities,
+    proposals,
+    votes,
     memories,
   };
 
@@ -79,7 +149,7 @@ export async function exportCommand(worldId: string, opts: Options): Promise<voi
 
   console.log(`✓ Exported to ${opts.out}`);
   console.log(
-    `  ${agents.length} agents · ${events.length} events · ${rules.length} rules · ${nonEmptyMemoryCount} memory files`,
+    `  ${agents.length} agents · ${events.length} events · ${rules.length} rules · ${groups.length} groups · ${proposals.length} proposals · ${nonEmptyMemoryCount} memory files`,
   );
 
   printNextSteps([

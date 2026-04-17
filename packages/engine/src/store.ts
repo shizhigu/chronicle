@@ -926,6 +926,83 @@ export class WorldStore {
     return rows.map(mapProposalFromRow);
   }
 
+  /**
+   * Every proposal in the world, regardless of status. Used by export
+   * to snapshot the governance layer so `.chronicle` archives don't
+   * drop adopted/rejected/expired proposals on round-trip.
+   */
+  async getAllProposalsForWorld(worldId: string): Promise<Proposal[]> {
+    const rows = await this.orm.select().from(s.proposals).where(eq(s.proposals.worldId, worldId));
+    return rows.map(mapProposalFromRow);
+  }
+
+  /**
+   * Every membership (active + historical) for a group. The active
+   * variant filters `left_tick IS NULL` which is correct for
+   * runtime queries but loses the audit trail on export — a
+   * restored world needs to be able to surface "Alice was briefly
+   * a member between ticks 4 and 9".
+   */
+  async getAllMembershipsForGroup(groupId: string): Promise<GroupMembership[]> {
+    const rows = await this.orm
+      .select()
+      .from(s.groupMemberships)
+      .where(eq(s.groupMemberships.groupId, groupId));
+    return rows.map(mapMembershipFromRow);
+  }
+
+  /**
+   * Every authority for the world (including revoked / expired).
+   * `getActiveAuthoritiesForWorld` filters for currently-valid ones,
+   * but exports want the full history so a replay can see the
+   * revocation event's target.
+   */
+  async getAllAuthoritiesForWorld(worldId: string): Promise<Authority[]> {
+    const rows = await this.orm
+      .select()
+      .from(s.authorities)
+      .where(eq(s.authorities.worldId, worldId));
+    return rows.map(mapAuthorityFromRow);
+  }
+
+  /**
+   * Every resource in the world — location-held AND agent-held. Exports
+   * flatten the inventory state so restored worlds don't silently start
+   * with empty pockets.
+   */
+  async getAllResourcesForWorld(worldId: string): Promise<Resource[]> {
+    const rows = await this.orm.select().from(s.resources).where(eq(s.resources.worldId, worldId));
+    return rows.map(mapResourceFromRow);
+  }
+
+  /**
+   * All location adjacency edges for a world. Used by export to
+   * preserve the graph layout — the locations themselves round-trip
+   * fine, but without edges every destination would be unreachable.
+   */
+  async getAllAdjacencies(
+    worldId: string,
+  ): Promise<Array<{ fromId: string; toId: string; cost: number; bidirectional: boolean }>> {
+    // Adjacency rows aren't scoped to worldId directly; they're
+    // keyed by location ids. Pull the world's locations first, then
+    // filter edges to those whose from/to are in the location set.
+    const locs = await this.orm
+      .select({ id: s.locations.id })
+      .from(s.locations)
+      .where(eq(s.locations.worldId, worldId));
+    const locIds = new Set(locs.map((l) => l.id));
+    if (locIds.size === 0) return [];
+    const rows = await this.orm.select().from(s.locationAdjacencies);
+    return rows
+      .filter((r) => locIds.has(r.fromLocationId) && locIds.has(r.toLocationId))
+      .map((r) => ({
+        fromId: r.fromLocationId,
+        toId: r.toLocationId,
+        cost: r.cost,
+        bidirectional: Boolean(r.bidirectional),
+      }));
+  }
+
   async updateProposalStatus(
     id: string,
     status: ProposalStatus,

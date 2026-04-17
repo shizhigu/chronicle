@@ -174,10 +174,11 @@ describe('export command', () => {
     const raw = await readFile(exportFile, 'utf-8');
     const bundle = JSON.parse(raw);
 
-    // schemaVersion 2 = file-backed memory cutover; pre-2 archives
-    // predate MemoryFileStore and are still readable (import tolerates
-    // a missing memories section) but exports always write the latest.
-    expect(bundle.manifest.schemaVersion).toBe(2);
+    // schemaVersion 3 = governance + adjacencies + resources +
+    // action_schemas + dead agents included. v1/v2 archives remain
+    // readable (import tolerates missing sections) but exports always
+    // write the latest version.
+    expect(bundle.manifest.schemaVersion).toBe(3);
     expect(bundle.manifest.worldId).toBe(world.id);
     expect(bundle.manifest.tickCount).toBe(12);
 
@@ -295,5 +296,104 @@ describe('export → import round-trip', () => {
     await exportCommand(world.id, { out: exportFile });
     // not re-importing to the same DB here — just verifying the export exists.
     expect(existsSync(exportFile)).toBe(true);
+  });
+
+  it('round-trips the governance layer (groups, memberships, authorities, proposals, votes)', async () => {
+    // Regression for the pre-v3 gap: export dropped the entire political
+    // layer. A world with a council + a granted authority + a vote cast
+    // round-tripped into a bare-state world with no governance at all.
+    const { WorldStore: EngineWorldStore } = await import('@chronicle/engine');
+    // Seed some governance state on the existing world BEFORE export.
+    const srcStore = await EngineWorldStore.open(paths.db);
+    const {
+      groupId: newGroupId,
+      proposalId: newProposalId,
+      authorityId: newAuthorityId,
+    } = await import('@chronicle/core');
+    const councilId = newGroupId();
+    await srcStore.createGroup({
+      id: councilId,
+      worldId: world.id,
+      name: 'Council',
+      description: 'decides things',
+      procedureKind: 'vote',
+      procedureConfig: {},
+      joinPredicate: null,
+      successionKind: null,
+      visibilityPolicy: 'open',
+      foundedTick: 1,
+      dissolvedTick: null,
+      createdAt: new Date().toISOString(),
+    });
+    await srcStore.addMembership(councilId, alice.id, 1);
+    const authId = newAuthorityId();
+    await srcStore.grantAuthority({
+      id: authId,
+      worldId: world.id,
+      holderKind: 'agent',
+      holderRef: alice.id,
+      powers: [{ kind: 'override_rule', ruleId: 'rul_x' }],
+      grantedTick: 1,
+      grantedByEventId: null,
+      expiresTick: null,
+      revokedTick: null,
+      createdAt: new Date().toISOString(),
+    });
+    const propId = newProposalId();
+    const dissolveEffect = { kind: 'dissolve_group' as const, groupId: councilId };
+    await srcStore.createProposal({
+      id: propId,
+      worldId: world.id,
+      targetGroupId: councilId,
+      sponsorAgentId: alice.id,
+      title: 'rename the council',
+      rationale: 'because',
+      effects: [dissolveEffect],
+      compiledEffects: [dissolveEffect],
+      openedTick: 2,
+      deadline: { kind: 'tick', at: 10 },
+      procedureOverride: null,
+      status: 'pending',
+      decidedTick: null,
+      outcomeDetail: null,
+    });
+    await srcStore.castVote({
+      proposalId: propId,
+      voterAgentId: alice.id,
+      stance: 'for',
+      weight: 1,
+      castTick: 3,
+      reasoning: 'ok',
+    });
+    srcStore.close();
+
+    await exportCommand(world.id, { out: exportFile });
+
+    const destHome = mkdtempSync(join(tmpdir(), 'chronicle-exim-gov-'));
+    process.env.CHRONICLE_HOME = destHome;
+    try {
+      await importCommand(exportFile);
+      const reopened = await EngineWorldStore.open(paths.db);
+
+      const groups = await reopened.getGroupsForWorld(world.id, true);
+      expect(groups.map((g) => g.name)).toContain('Council');
+
+      const members = await reopened.getActiveMembershipsForGroup(councilId);
+      expect(members.map((m) => m.agentId)).toContain(alice.id);
+
+      const authorities = await reopened.getActiveAuthoritiesForWorld(world.id, 5);
+      expect(authorities.map((a) => a.holderRef)).toContain(alice.id);
+
+      const proposals = await reopened.getAllProposalsForWorld(world.id);
+      expect(proposals.map((p) => p.title)).toContain('rename the council');
+
+      const votes = await reopened.getVotesForProposal(propId);
+      expect(votes.map((v) => v.voterAgentId)).toContain(alice.id);
+
+      reopened.close();
+    } finally {
+      process.env.CHRONICLE_HOME = tmpHome;
+      rmSync(destHome, { recursive: true, force: true });
+    }
   });
 });
