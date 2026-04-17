@@ -249,6 +249,8 @@ export class DbEventRelay {
           },
         ];
       }
+      case 'budget_exceeded':
+        return [{ type: 'budget_exceeded', worldId: ev.worldId }];
       case 'proposal_adopted':
       case 'proposal_rejected':
       case 'proposal_expired':
@@ -281,6 +283,8 @@ export class DbEventRelay {
       case 'agent_dormant':
       case 'agent_silent':
         return [];
+      // `action` is handled above (with the speak→speech split);
+      // this branch is unreachable but TS needs it for exhaustiveness.
       default: {
         // Exhaustiveness check — if someone adds a new EventType and
         // forgets to handle it here, TS will complain.

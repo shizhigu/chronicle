@@ -238,7 +238,11 @@ export type EventType =
   | 'agent_dormant'
   // Active agent took a turn but produced no tool call — distinct
   // from `agent_dormant` (engine skipped the turn). See engine.ts.
-  | 'agent_silent';
+  | 'agent_silent'
+  // Run hit the user-specified token budget — persisted so cross-
+  // process subscribers (dashboard via DbEventRelay) can surface it
+  // instead of silently seeing the world drift to status=paused.
+  | 'budget_exceeded';
 
 export interface Event {
   id: number;

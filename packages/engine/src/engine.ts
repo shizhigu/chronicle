@@ -183,6 +183,22 @@ export class Engine {
         if (untilTripped) break;
 
         if (runOpts.budget && this.world.tokensUsed >= runOpts.budget) {
+          // Persist AND emit. Without the DB record, DbEventRelay
+          // (the cross-process path for the dashboard UI) never sees
+          // the budget trip — only the same-process `--live` stream
+          // does, so a browser user watching via WS sees the world
+          // silently go to status=paused with no explanation.
+          await this.store.recordEvent({
+            worldId: this.world.id,
+            tick: this.world.currentTick,
+            eventType: 'budget_exceeded',
+            actorId: null,
+            data: {
+              tokensUsed: this.world.tokensUsed,
+              budget: runOpts.budget,
+            },
+            tokenCost: 0,
+          });
           this.events.emit({ type: 'budget_exceeded', worldId: this.world.id });
           this.pause();
           break;
