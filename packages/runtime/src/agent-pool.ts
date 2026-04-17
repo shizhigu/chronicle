@@ -30,6 +30,7 @@ import {
 } from '@chronicle/engine';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { type AnyAgentTool, type ExecutionContext, compileWorldTools } from './tools/compiler.js';
+import { TRANSCRIPT_WINDOW_MESSAGES, trimTranscript } from './transcript.js';
 
 // Lazy-load pi-agent so the runtime package is loadable without it (useful for tests).
 // Pi-agent's external API uses `any` shapes — we don't re-type them here.
@@ -186,8 +187,26 @@ export class AgentPool implements AgentRuntimeAdapter {
     const turnMessages = messages.slice(messagesBefore);
     const action = extractPrimaryToolCall(turnMessages, character.id);
 
-    const historyBlob = Buffer.from(JSON.stringify(messages), 'utf-8');
-    const tokensSpent = estimateTokensFromMessages(messages, tokensBefore);
+    // Cap the transcript so long runs don't blow the context window.
+    // Without this, a 50-tick run on gemma-4-26b (8k ctx, ~0.15KB per
+    // tick per agent) overflows and pi-agent's openai-completions
+    // transport starts returning 400 "context length exceeded" which
+    // is then retried by pi-agent, eating the few thousand tokens
+    // left until the whole turn errors out.
+    //
+    // Simple policy: keep the most recent `TRANSCRIPT_WINDOW_MESSAGES`
+    // entries. That's a blunt instrument — a proper implementation
+    // would summarise older messages into the memory file — but the
+    // recent window covers "this turn + last few turns of internal
+    // monologue", and persistent character state lives in memory.md
+    // anyway (hermes pattern).
+    const trimmedMessages = trimTranscript(messages, TRANSCRIPT_WINDOW_MESSAGES);
+    if (trimmedMessages !== messages && instance.state) {
+      instance.state.messages = trimmedMessages;
+    }
+
+    const historyBlob = Buffer.from(JSON.stringify(trimmedMessages), 'utf-8');
+    const tokensSpent = estimateTokensFromMessages(trimmedMessages, tokensBefore);
 
     return {
       agentId: character.id,
