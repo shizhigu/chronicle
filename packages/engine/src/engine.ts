@@ -365,8 +365,11 @@ export class Engine {
       await this.reflection.triggerFor(liveAgents, nextTick);
     }
 
-    // Drama + catalyst
-    const dramaScore = await this.drama.scoreRecentTicks(this.world, 10);
+    // Drama + catalyst. Pass `nextTick` explicitly — `world.currentTick`
+    // hasn't been advanced yet, so relying on the default would query
+    // events UP TO currentTick (= nextTick - 1) and silently drop the
+    // events we just persisted for this tick (they carry `tick = nextTick`).
+    const dramaScore = await this.drama.scoreRecentTicks(this.world, 10, nextTick);
     if (
       this.world.config.dramaCatalystEnabled &&
       dramaScore < 0.25 &&

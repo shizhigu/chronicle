@@ -71,4 +71,26 @@ describe('DramaDetector', () => {
     const score = await detector.scoreRecentTicks(world, 10);
     expect(score).toBeGreaterThan(0.1);
   });
+
+  it('includes events at `upToTick` when the engine passes a tick ahead of world.currentTick', async () => {
+    // Regression: `runSingleTick` calls the drama scorer BEFORE
+    // advancing `world.currentTick`, so relying on `world.currentTick`
+    // would silently drop the events persisted for the in-progress
+    // tick (they carry `tick = nextTick`). The third-arg override
+    // fixes the off-by-one so the engine's catalyst trigger sees
+    // fresh activity rather than a stale window.
+    const detector = new DramaDetector(store);
+    // world.currentTick = 10 from the fixture. Record the dramatic
+    // event at tick 11 — the "in-progress" tick the engine hasn't
+    // committed yet.
+    await store.recordEvent({ worldId: world.id, tick: 11, eventType: 'death', data: { a: 1 } });
+
+    // Default behavior — uses world.currentTick=10 — misses the event.
+    const missed = await detector.scoreRecentTicks(world, 10);
+    expect(missed).toBe(0);
+
+    // Override to upToTick=11 — the death event lands in the window.
+    const caught = await detector.scoreRecentTicks(world, 10, 11);
+    expect(caught).toBeGreaterThan(0);
+  });
 });

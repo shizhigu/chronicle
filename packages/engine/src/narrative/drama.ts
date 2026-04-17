@@ -54,9 +54,22 @@ const WEIGHTS: Record<string, number> = {
 export class DramaDetector {
   constructor(private store: WorldStore) {}
 
-  async scoreRecentTicks(world: World, windowTicks: number): Promise<number> {
-    const from = Math.max(0, world.currentTick - windowTicks);
-    const events = await this.store.getEventsInRange(world.id, from, world.currentTick);
+  /**
+   * Score drama over the last `windowTicks` ticks ending at
+   * `upToTick` (inclusive). Callers that want to score the
+   * just-completed tick MUST pass its tick number — the engine's
+   * `runSingleTick` records tick-N events but hasn't advanced
+   * `world.currentTick` yet at the drama-check point, so relying on
+   * `world.currentTick` silently excludes the current tick's events
+   * from the window.
+   */
+  async scoreRecentTicks(
+    world: World,
+    windowTicks: number,
+    upToTick: number = world.currentTick,
+  ): Promise<number> {
+    const from = Math.max(0, upToTick - windowTicks);
+    const events = await this.store.getEventsInRange(world.id, from, upToTick);
 
     let total = 0;
     for (const e of events) {
