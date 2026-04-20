@@ -23,7 +23,7 @@
     "isbot": "^5",
     "konva": "^9",
     "react-konva": "^19",
-    "framer-motion": "^11",
+    "framer-motion": "^12",
     "zustand": "^5"
   },
   "devDependencies": {
